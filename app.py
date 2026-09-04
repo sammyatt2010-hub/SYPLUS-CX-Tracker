@@ -35,7 +35,7 @@ EAGERNESS_LABEL = {
     "CX - Leaving": "Leaving (at risk)",
 }
 
-FEASIBILITY_ORDER = ["≤ 6 months", "6–12 months", "1–2 years", "2+ years", "Unknown"]
+FEASIBILITY_ORDER = ["< 12 months", "1–3 years", "3–7 years", "7+ years", "Unknown"]
 
 
 @st.cache_data(ttl=270)  # Zoho access tokens last 1hr; refresh well before that
@@ -175,13 +175,13 @@ df["Days Remaining"] = (df["Contract End Date"] - today).dt.days
 def feasibility_tier(days):
     if pd.isna(days):
         return "Unknown"
-    if days <= 182:  # ~6 months, includes contracts already ended
-        return "≤ 6 months"
-    if days <= 365:
-        return "6–12 months"
-    if days <= 730:
-        return "1–2 years"
-    return "2+ years"
+    if days <= 365:  # includes contracts already ended
+        return "< 12 months"
+    if days <= 365 * 3:
+        return "1–3 years"
+    if days <= 365 * 7:
+        return "3–7 years"
+    return "7+ years"
 
 
 def time_remaining_label(days):
@@ -257,8 +257,8 @@ st.caption(
     "across the top. The top-left corner is where to focus first."
 )
 
-MATRIX_FEASIBILITY = ["≤ 6 months", "6–12 months", "1–2 years", "2+ years"]
-HOTTEST_CELL = ("CX - Eager", "≤ 6 months")  # eager + contract ending soon = act now
+MATRIX_FEASIBILITY = ["< 12 months", "1–3 years", "3–7 years", "7+ years"]
+HOTTEST_CELL = ("CX - Eager", "< 12 months")  # eager + contract ending soon = act now
 
 header_cols = st.columns([1.3] + [1] * len(MATRIX_FEASIBILITY))
 header_cols[0].markdown("**Eagerness \\ Feasibility**")
