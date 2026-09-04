@@ -7,7 +7,7 @@ import streamlit as st
 st.set_page_config(
     page_title="SYPLUS CX Command Center", page_icon="🧭", layout="wide"
 )
-st.title("🧭 SYPLUS Customer Experience Upgrade Tracker")
+st.title("🧭 SYPLUS Customer Experience Command Center")
 st.caption(
     "Live from Zoho CRM — SYPLUS accounts tagged for CX follow-up, "
     "ranked by eagerness and contract feasibility."
@@ -140,38 +140,54 @@ def load_accounts():
     return pd.DataFrame(rows)
 
 
-@st.cache_data(ttl=300)  # site contacts change far less often than CX tags — cache longer
-def get_related_contacts(account_ids):
-    """For accounts with no Primary Contact set directly, fall back to their
-    linked Contact records. Picks whichever linked contact has a mobile or
-    phone number on file (preferring mobile), so the number is one someone
-    can actually ring."""
+@st.cache_data(ttl=600)  # site contacts change far less often than CX tags — cache longer
+def get_contacts_lookup():
+    """Fall back for accounts with no Primary Contact set directly, from their
+    linked Contact records. Pulls the whole Contacts module in bulk (a handful
+    of paginated requests) rather than one request per account — much faster
+    than looking up each account's contacts one at a time. Picks whichever
+    linked contact has a mobile or phone number on file (preferring mobile),
+    so the number is one someone can actually ring."""
     token = get_access_token()
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-    contacts_by_account = {}
 
-    for account_id in account_ids:
+    contacts_by_account_id = {}
+    page = 1
+    while True:
         try:
             resp = requests.get(
-                f"{ZOHO_API_DOMAIN}/crm/v2/Accounts/{account_id}/Contacts",
+                f"{ZOHO_API_DOMAIN}/crm/v2/Contacts",
                 headers=headers,
-                params={"fields": "Full_Name,Phone,Mobile"},
-                timeout=15,
+                params={
+                    "fields": "Account_Name,Full_Name,Phone,Mobile",
+                    "per_page": 200,
+                    "page": page,
+                },
+                timeout=20,
             )
         except Exception:
-            continue  # one account failing to reach Zoho shouldn't sink the page
+            break  # contacts are a nice-to-have; don't sink the whole page over this
 
         if resp.status_code != 200:
-            continue  # 204 = no linked contacts; anything else, skip quietly
+            break  # 204 = no contacts at all; anything else, stop quietly
 
-        contacts = resp.json().get("data", [])
-        if not contacts:
-            continue
+        payload = resp.json()
+        for c in payload.get("data", []):
+            account = c.get("Account_Name") or {}
+            account_id = account.get("id")
+            if not account_id:
+                continue
+            contacts_by_account_id.setdefault(account_id, []).append(c)
 
+        if not payload.get("info", {}).get("more_records"):
+            break
+        page += 1
+
+    contacts_by_account = {}
+    for account_id, contacts in contacts_by_account_id.items():
         best = next((c for c in contacts if c.get("Mobile")), None)
         if best is None:
             best = next((c for c in contacts if c.get("Phone")), contacts[0])
-
         contacts_by_account[account_id] = {
             "name": best.get("Full_Name") or "",
             "number": best.get("Mobile") or best.get("Phone") or "",
@@ -197,16 +213,16 @@ if df.empty:
 
 # Fill in a site contact for any account with no Primary Contact set directly
 # on the Account record, from that account's linked Contact records.
-needs_lookup = df.loc[df["Primary Contact"] == "", "Account ID"].dropna().tolist()
-if needs_lookup:
-    try:
-        related = get_related_contacts(tuple(needs_lookup))
-    except Exception:
-        related = {}
-    for account_id, contact in related.items():
-        mask = df["Account ID"] == account_id
-        df.loc[mask, "Primary Contact"] = contact["name"]
-        df.loc[mask, "Primary Contact Number"] = contact["number"]
+try:
+    contacts_lookup = get_contacts_lookup()
+except Exception:
+    contacts_lookup = {}
+
+needs_lookup = df["Primary Contact"] == ""
+for account_id, contact in contacts_lookup.items():
+    mask = needs_lookup & (df["Account ID"] == account_id)
+    df.loc[mask, "Primary Contact"] = contact["name"]
+    df.loc[mask, "Primary Contact Number"] = contact["number"]
 
 
 # --- Data Prep: contract end date, time remaining, feasibility tier ---
