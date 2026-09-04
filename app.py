@@ -306,7 +306,7 @@ st.caption(
     "across the top. The top-left corner is where to focus first."
 )
 
-MATRIX_FEASIBILITY = ["< 12 months", "1–3 years", "3–7 years", "7+ years"]
+MATRIX_FEASIBILITY = ["< 12 months", "1–3 years", "3–7 years"]
 HOTTEST_CELL = ("CX - Eager", "< 12 months")  # eager + contract ending soon = act now
 
 header_cols = st.columns([1.3] + [1] * len(MATRIX_FEASIBILITY))
@@ -341,6 +341,19 @@ if not unknown_df.empty:
     ):
         st.dataframe(
             unknown_df[["Account Name", "CX Tag", "Primary Contact", "Contract Term (months)"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+# The matrix above only shows up to 3–7 years since no contract currently runs
+# longer — but if one ever does, it's flagged here rather than silently dropped.
+long_df = filtered_df[filtered_df["Feasibility"] == "7+ years"]
+if not long_df.empty:
+    with st.expander(
+        f"ℹ️ {len(long_df)} account(s) with more than 7 years left on contract"
+    ):
+        st.dataframe(
+            long_df[["Account Name", "CX Tag", "Time Remaining", "Primary Contact"]],
             hide_index=True,
             use_container_width=True,
         )
