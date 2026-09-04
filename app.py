@@ -38,6 +38,14 @@ EAGERNESS_LABEL = {
 
 FEASIBILITY_ORDER = ["< 12 months", "1–3 years", "3–7 years", "7+ years", "Unknown"]
 
+# Org ID for building direct "open this account in Zoho" links from the
+# priority matrix. Zoho's own record URLs follow this pattern.
+ZOHO_ORG_ID = "20098805637"
+
+
+def zoho_account_url(account_id):
+    return f"https://crm.zoho.eu/crm/org{ZOHO_ORG_ID}/tab/Accounts/{account_id}"
+
 
 @st.cache_data(ttl=270)  # Zoho access tokens last 1hr; refresh well before that
 def get_access_token():
@@ -345,41 +353,50 @@ for tag in EAGERNESS_ORDER:
                     with st.popover("View accounts", use_container_width=True):
                         for _, acc in cell_df.iterrows():
                             contact = acc["Primary Contact"] or "No primary contact on file"
+                            account_link = zoho_account_url(acc["Account ID"])
                             st.markdown(
-                                f"**{acc['Account Name']}** — {acc['Time Remaining']}  \n"
+                                f"**[{acc['Account Name']}]({account_link})** — {acc['Time Remaining']}  \n"
                                 f"_{contact}_"
                             )
 
-unknown_df = filtered_df[filtered_df["Feasibility"] == "Unknown"]
+unknown_df = filtered_df[filtered_df["Feasibility"] == "Unknown"].copy()
 if not unknown_df.empty:
+    unknown_df["Open in Zoho"] = unknown_df["Account ID"].apply(zoho_account_url)
     with st.expander(
         f"⚠️ {len(unknown_df)} account(s) with no contract end date on file"
     ):
         st.dataframe(
-            unknown_df[["Account Name", "CX Tag", "Primary Contact", "Contract Term (months)"]],
+            unknown_df[
+                ["Account Name", "CX Tag", "Primary Contact", "Contract Term (months)", "Open in Zoho"]
+            ],
             hide_index=True,
             use_container_width=True,
+            column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
         )
 
 # The matrix above only shows up to 3–7 years since no contract currently runs
 # longer — but if one ever does, it's flagged here rather than silently dropped.
-long_df = filtered_df[filtered_df["Feasibility"] == "7+ years"]
+long_df = filtered_df[filtered_df["Feasibility"] == "7+ years"].copy()
 if not long_df.empty:
+    long_df["Open in Zoho"] = long_df["Account ID"].apply(zoho_account_url)
     with st.expander(
         f"ℹ️ {len(long_df)} account(s) with more than 7 years left on contract"
     ):
         st.dataframe(
-            long_df[["Account Name", "CX Tag", "Time Remaining", "Primary Contact"]],
+            long_df[["Account Name", "CX Tag", "Time Remaining", "Primary Contact", "Open in Zoho"]],
             hide_index=True,
             use_container_width=True,
+            column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
         )
 
 st.divider()
 
 # --- Full Sortable List ---
 st.subheader("📋 Full Account List")
+full_list_df = filtered_df.sort_values("Days Remaining").copy()
+full_list_df["Open in Zoho"] = full_list_df["Account ID"].apply(zoho_account_url)
 st.dataframe(
-    filtered_df.sort_values("Days Remaining")[
+    full_list_df[
         [
             "Account Name",
             "Eagerness",
@@ -390,11 +407,13 @@ st.dataframe(
             "Primary Contact Number",
             "No. of Handsets",
             "All Tags",
+            "Open in Zoho",
         ]
     ],
     hide_index=True,
     use_container_width=True,
     column_config={
         "Contract End Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+        "Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗"),
     },
 )
