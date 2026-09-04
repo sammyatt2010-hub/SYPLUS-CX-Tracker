@@ -17,7 +17,7 @@ st.caption(
 ZOHO_ACCOUNTS_URL = "https://accounts.zoho.eu/oauth/v2/token"
 ZOHO_API_DOMAIN = "https://www.zohoapis.eu"
 ACCOUNT_FIELDS = (
-    "Account_Name,Tag,Owner,Phone,Post_Code,"
+    "Account_Name,Tag,Phone,Post_Code,"
     "Primary_Contact_Name,Primary_Contact_Number,"
     "Contract_Date_End,Contact_Term,Network_Signed,No_of_Handsets"
 )
@@ -120,14 +120,12 @@ def load_accounts():
         if cx_tag is None:
             continue  # SYPLUS account with no CX status tag yet — not actionable here
 
-        owner = r.get("Owner") or {}
-
         rows.append(
             {
+                "Account ID": r.get("id"),
                 "Account Name": r.get("Account_Name") or "",
                 "CX Tag": cx_tag,
                 "All Tags": ", ".join(sorted(tag_names)),
-                "Account Owner": owner.get("name") or "Unassigned",
                 "Primary Contact": r.get("Primary_Contact_Name") or "",
                 "Primary Contact Number": r.get("Primary_Contact_Number") or "",
                 "Phone": r.get("Phone") or "",
@@ -140,6 +138,46 @@ def load_accounts():
         )
 
     return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300)  # site contacts change far less often than CX tags — cache longer
+def get_related_contacts(account_ids):
+    """For accounts with no Primary Contact set directly, fall back to their
+    linked Contact records. Picks whichever linked contact has a mobile or
+    phone number on file (preferring mobile), so the number is one someone
+    can actually ring."""
+    token = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+    contacts_by_account = {}
+
+    for account_id in account_ids:
+        try:
+            resp = requests.get(
+                f"{ZOHO_API_DOMAIN}/crm/v2/Accounts/{account_id}/Contacts",
+                headers=headers,
+                params={"fields": "Full_Name,Phone,Mobile"},
+                timeout=15,
+            )
+        except Exception:
+            continue  # one account failing to reach Zoho shouldn't sink the page
+
+        if resp.status_code != 200:
+            continue  # 204 = no linked contacts; anything else, skip quietly
+
+        contacts = resp.json().get("data", [])
+        if not contacts:
+            continue
+
+        best = next((c for c in contacts if c.get("Mobile")), None)
+        if best is None:
+            best = next((c for c in contacts if c.get("Phone")), contacts[0])
+
+        contacts_by_account[account_id] = {
+            "name": best.get("Full_Name") or "",
+            "number": best.get("Mobile") or best.get("Phone") or "",
+        }
+
+    return contacts_by_account
 
 
 # --- Load & Error Handling ---
@@ -156,6 +194,19 @@ if df.empty:
         "(CX - Eager, CX - Upgrade Potential, CX - Review - Neutral, CX - Leaving)."
     )
     st.stop()
+
+# Fill in a site contact for any account with no Primary Contact set directly
+# on the Account record, from that account's linked Contact records.
+needs_lookup = df.loc[df["Primary Contact"] == "", "Account ID"].dropna().tolist()
+if needs_lookup:
+    try:
+        related = get_related_contacts(tuple(needs_lookup))
+    except Exception:
+        related = {}
+    for account_id, contact in related.items():
+        mask = df["Account ID"] == account_id
+        df.loc[mask, "Primary Contact"] = contact["name"]
+        df.loc[mask, "Primary Contact Number"] = contact["number"]
 
 
 # --- Data Prep: contract end date, time remaining, feasibility tier ---
@@ -222,10 +273,6 @@ selected_feasibility = st.sidebar.multiselect(
     options=FEASIBILITY_ORDER,
     default=FEASIBILITY_ORDER,
 )
-owner_options = sorted(df["Account Owner"].unique())
-selected_owners = st.sidebar.multiselect(
-    "Account Owner", options=owner_options, default=owner_options
-)
 name_search = st.sidebar.text_input("Search account name")
 
 st.sidebar.divider()
@@ -235,7 +282,6 @@ st.sidebar.caption("Data refreshes from Zoho CRM automatically every 60 seconds.
 filtered_df = df[
     df["CX Tag"].isin(selected_cx_tags)
     & df["Feasibility"].isin(selected_feasibility)
-    & df["Account Owner"].isin(selected_owners)
 ]
 if name_search:
     filtered_df = filtered_df[
@@ -294,7 +340,7 @@ if not unknown_df.empty:
         f"⚠️ {len(unknown_df)} account(s) with no contract end date on file"
     ):
         st.dataframe(
-            unknown_df[["Account Name", "CX Tag", "Account Owner", "Contract Term (months)"]],
+            unknown_df[["Account Name", "CX Tag", "Primary Contact", "Contract Term (months)"]],
             hide_index=True,
             use_container_width=True,
         )
@@ -313,7 +359,6 @@ st.dataframe(
             "Contract End Date",
             "Primary Contact",
             "Primary Contact Number",
-            "Account Owner",
             "No. of Handsets",
             "All Tags",
         ]
