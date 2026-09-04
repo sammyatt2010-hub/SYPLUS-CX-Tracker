@@ -7,7 +7,7 @@ import streamlit as st
 st.set_page_config(
     page_title="SYPLUS CX Command Center", page_icon="🧭", layout="wide"
 )
-st.title("🧭 SYPLUS Customer Experience Command Center")
+st.title("🧭 SYPLUS Customer Experience Upgrade Tracker")
 st.caption(
     "Live from Zoho CRM — SYPLUS accounts tagged for CX follow-up, "
     "ranked by eagerness and contract feasibility."
