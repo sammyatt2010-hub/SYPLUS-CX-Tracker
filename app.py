@@ -18,6 +18,7 @@ ZOHO_ACCOUNTS_URL = "https://accounts.zoho.eu/oauth/v2/token"
 ZOHO_API_DOMAIN = "https://www.zohoapis.eu"
 ACCOUNT_FIELDS = (
     "Account_Name,Tag,Owner,Phone,Post_Code,"
+    "Primary_Contact_Name,Primary_Contact_Number,"
     "Contract_Date_End,Contact_Term,Network_Signed,No_of_Handsets"
 )
 
@@ -127,6 +128,8 @@ def load_accounts():
                 "CX Tag": cx_tag,
                 "All Tags": ", ".join(sorted(tag_names)),
                 "Account Owner": owner.get("name") or "Unassigned",
+                "Primary Contact": r.get("Primary_Contact_Name") or "",
+                "Primary Contact Number": r.get("Primary_Contact_Number") or "",
                 "Phone": r.get("Phone") or "",
                 "Postal Code": r.get("Post_Code") or "",
                 "Contract Signed": r.get("Network_Signed") or "",
@@ -279,9 +282,10 @@ for tag in EAGERNESS_ORDER:
                 if not cell_df.empty:
                     with st.popover("View accounts", use_container_width=True):
                         for _, acc in cell_df.iterrows():
+                            contact = acc["Primary Contact"] or "No primary contact on file"
                             st.markdown(
                                 f"**{acc['Account Name']}** — {acc['Time Remaining']}  \n"
-                                f"_{acc['Account Owner']}_"
+                                f"_{contact}_"
                             )
 
 unknown_df = filtered_df[filtered_df["Feasibility"] == "Unknown"]
@@ -307,8 +311,9 @@ st.dataframe(
             "Feasibility",
             "Time Remaining",
             "Contract End Date",
+            "Primary Contact",
+            "Primary Contact Number",
             "Account Owner",
-            "Phone",
             "No. of Handsets",
             "All Tags",
         ]
