@@ -57,6 +57,12 @@ ACCOUNT_FIELDS = (
 # carrying one of these (plus the SYPLUS tag) is what this wallboard tracks.
 SYPLUS_TAG = "SYPLUS"
 
+# A separate, independent tag consultants/account managers apply once they've
+# booked a review visit — it sits alongside one of the four CX tags above
+# rather than replacing it, so it's tracked as its own yes/no flag rather
+# than as another entry in the eagerness ranking.
+BOOKED_TAG = "CX - Review Booked"
+
 # Eagerness ranking, highest priority first. Matches the colour-coding used
 # on the tags inside Zoho (green / purple / yellow / red).
 EAGERNESS_ORDER = ["CX - Eager", "CX - Upgrade Potential", "CX - Review - Neutral", "CX - Leaving"]
@@ -220,6 +226,7 @@ def load_accounts():
                 "Account ID": r.get("id"),
                 "Account Name": r.get("Account_Name") or "",
                 "CX Tag": cx_tag,
+                "Booked": BOOKED_TAG in tag_names,
                 "All Tags": ", ".join(sorted(tag_names)),
                 "Primary Contact": r.get("Primary_Contact_Name") or "",
                 "Primary Contact Number": r.get("Primary_Contact_Number") or "",
@@ -371,6 +378,7 @@ df["Feasibility"] = df["Days Remaining"].apply(feasibility_tier)
 df["Time Remaining"] = df["Days Remaining"].apply(time_remaining_label)
 df["Eagerness"] = df["CX Tag"].map(EAGERNESS_LABEL)
 df["Area"] = df["Postal Code"].apply(postcode_area_name)
+df["Booked Status"] = df["Booked"].map({True: "Booked", False: "Not booked"})
 
 
 # --- Sidebar Filters ---
@@ -385,6 +393,11 @@ selected_feasibility = st.sidebar.multiselect(
     options=FEASIBILITY_ORDER,
     default=FEASIBILITY_ORDER,
 )
+selected_booked_status = st.sidebar.multiselect(
+    "Review visit",
+    options=["Booked", "Not booked"],
+    default=["Booked", "Not booked"],
+)
 name_search = st.sidebar.text_input("Search account name")
 
 st.sidebar.divider()
@@ -394,6 +407,7 @@ st.sidebar.caption("Data refreshes from Zoho CRM automatically every 60 seconds.
 filtered_df = df[
     df["CX Tag"].isin(selected_cx_tags)
     & df["Feasibility"].isin(selected_feasibility)
+    & df["Booked Status"].isin(selected_booked_status)
 ]
 if name_search:
     filtered_df = filtered_df[
@@ -404,10 +418,11 @@ st.divider()
 
 # --- Top-Line KPIs ---
 
-kpi_cols = st.columns(len(EAGERNESS_ORDER) + 1)
+kpi_cols = st.columns(len(EAGERNESS_ORDER) + 2)
 kpi_cols[0].metric("SYPLUS Accounts Tracked", f"{len(filtered_df)}")
-for col, tag in zip(kpi_cols[1:], EAGERNESS_ORDER):
+for col, tag in zip(kpi_cols[1:-1], EAGERNESS_ORDER):
     col.metric(EAGERNESS_LABEL[tag], f"{len(filtered_df[filtered_df['CX Tag'] == tag])}")
+kpi_cols[-1].metric("📅 Booked Appointments", f"{len(filtered_df[filtered_df['Booked']])}")
 
 st.divider()
 
@@ -488,6 +503,7 @@ st.dataframe(
         [
             "Account Name",
             "Eagerness",
+            "Booked",
             "Feasibility",
             "Time Remaining",
             "Contract End Date",
@@ -502,6 +518,9 @@ st.dataframe(
     use_container_width=True,
     column_config={
         "Contract End Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+        "Booked": st.column_config.CheckboxColumn(
+            "Booked", help="Ticked once a review visit has been booked (CX - Review Booked tag)"
+        ),
         "Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗"),
     },
 )
