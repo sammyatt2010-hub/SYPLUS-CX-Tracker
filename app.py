@@ -2,6 +2,7 @@ import calendar
 import re
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -10,6 +11,8 @@ import streamlit as st
 st.set_page_config(
     page_title="SYPLUS CX Command Center", page_icon="🧭", layout="wide"
 )
+
+UK_TZ = ZoneInfo("Europe/London")
 
 
 # --- Simple password gate ---
@@ -567,7 +570,7 @@ def parse_zoho_date(value):
 
 
 df["Contract End Date"] = df["Contract End Date"].apply(parse_zoho_date)
-today = pd.Timestamp(datetime.now().date())
+today = pd.Timestamp(datetime.now(UK_TZ).date())
 df["Days Remaining"] = (df["Contract End Date"] - today).dt.days
 
 
@@ -628,8 +631,11 @@ selected_booked_status = st.sidebar.multiselect(
 name_search = st.sidebar.text_input("Search account name")
 
 st.sidebar.divider()
-st.sidebar.caption(f"Last refreshed: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-st.sidebar.caption("Data refreshes from Zoho CRM automatically every 60 seconds.")
+if st.sidebar.button("🔄 Refresh data now", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+st.sidebar.caption(f"Last refreshed: {datetime.now(UK_TZ).strftime('%d/%m/%Y %H:%M:%S')}")
+st.sidebar.caption("Data refreshes from Zoho CRM automatically every 60 seconds, or click the button above for an instant refresh.")
 
 filtered_df = df[
     df["CX Tag"].isin(selected_cx_tags)
