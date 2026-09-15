@@ -444,6 +444,8 @@ def load_accounts():
                 "Account ID": r.get("id"),
                 "Account Name": r.get("Account_Name") or "",
                 "CX Tag": cx_tag,
+                # Placeholder — overwritten below from real Zoho Meetings once
+                # they're loaded, which is the actual source of truth.
                 "Booked": BOOKED_TAG in tag_names,
                 "All Tags": ", ".join(sorted(tag_names)),
                 "Primary Contact": r.get("Primary_Contact_Name") or "",
@@ -557,17 +559,18 @@ for account_id, contact in contacts_lookup.items():
     df.loc[df["Account ID"] == account_id, "Primary Contact Email"] = contact.get("email", "")
 
 # Pull real booked Meetings from Zoho now (rather than down in the Diary
-# section) so the top-line KPI and Priority Matrix can reflect an actual
-# booking the moment it's made in Zoho — not just accounts someone has
-# manually tagged "CX - Review Booked". A booking counts as long as either
-# is true, so nothing that relied on the tag alone stops being counted.
+# section) so the top-line KPI and Priority Matrix reflect an actual booking
+# the moment it's made in Zoho. This is the single source of truth for
+# "booked" — the old "CX - Review Booked" tag was a manual stand-in from
+# before meetings were tracked in Zoho itself, and is no longer read here,
+# so it can't drift out of sync with what's really on the calendar.
 try:
     appointments, diary_error = get_diary_appointments(df)
 except Exception as err:
     appointments, diary_error = [], str(err)
 
 booked_account_ids = {a["account_id"] for a in appointments}
-df["Booked"] = df["Booked"] | df["Account ID"].isin(booked_account_ids)
+df["Booked"] = df["Account ID"].isin(booked_account_ids)
 
 
 # --- Data Prep: contract end date, time remaining, feasibility tier ---
