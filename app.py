@@ -1,5 +1,11 @@
+import calendar
+import json
+import os
 import re
-from datetime import datetime
+import uuid
+from datetime import date, datetime, time, timedelta, timezone
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -138,6 +144,134 @@ ZOHO_ORG_ID = "20098805637"
 
 def zoho_account_url(account_id):
     return f"https://crm.zoho.eu/crm/org{ZOHO_ORG_ID}/tab/Accounts/{account_id}"
+
+
+# --- Diary: manually-entered booked visit dates ---
+# Zoho doesn't currently track a visit date/time, just the CX - Review Booked
+# tag itself, so these are entered by hand in this app rather than pulled
+# from Zoho. They're all assumed to be in UK local time.
+BUSINESS_TIMEZONE = "Europe/London"
+APPOINTMENT_DURATION_OPTIONS = [15, 30, 45, 60, 90, 120]
+DEFAULT_APPOINTMENT_DURATION_MINUTES = 30
+APPOINTMENTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diary_appointments.json")
+
+
+@st.cache_resource
+def get_appointments_store():
+    """A shared, in-memory list of manually-booked diary appointments, visible
+    to every viewer of this running app — st.cache_resource (unlike
+    st.session_state, which is private per browser session) hands back the
+    exact same object to everyone, so appending to it here is visible to the
+    whole team immediately. Backed by a small JSON file on disk so entries
+    also survive an ordinary app restart.
+
+    Caveat, worth knowing: this is NOT as durable as the Zoho data elsewhere
+    on this page. If Streamlit Cloud spins up a fresh copy of the app (a
+    redeploy, or waking up after a period of inactivity), that starts from a
+    clean checkout of the code and this file resets to empty. It's a
+    deliberately lightweight stand-in since visit dates aren't tracked in
+    Zoho today — ask about wiring this into a proper Zoho field later if
+    full durability matters."""
+    appointments = []
+    if os.path.exists(APPOINTMENTS_FILE):
+        try:
+            with open(APPOINTMENTS_FILE) as f:
+                appointments = json.load(f)
+        except Exception:
+            appointments = []
+    return appointments
+
+
+def persist_appointments(appointments):
+    """Best-effort write-through to disk. On failure, the in-memory copy
+    (still held by get_appointments_store's cached singleton) carries on
+    working for the rest of this app's run — it just won't survive a
+    restart."""
+    try:
+        with open(APPOINTMENTS_FILE, "w") as f:
+            json.dump(appointments, f, indent=2)
+    except Exception:
+        pass
+
+
+def format_duration(minutes):
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, rem = divmod(minutes, 60)
+    return f"{hours}h" + (f" {rem}m" if rem else "")
+
+
+def appointment_datetimes_utc(appt):
+    """Combines an appointment's stored local date/time into UK-local-aware
+    start/end datetimes, then converts to UTC — Outlook's deep-link URLs
+    expect UTC, and using a real timezone (rather than a fixed offset) keeps
+    this correct across the BST/GMT clock change automatically."""
+    local_dt = datetime.strptime(f"{appt['date']} {appt['time']}", "%Y-%m-%d %H:%M")
+    local_dt = local_dt.replace(tzinfo=ZoneInfo(BUSINESS_TIMEZONE))
+    start_utc = local_dt.astimezone(timezone.utc)
+    end_utc = start_utc + timedelta(minutes=appt.get("duration_minutes", DEFAULT_APPOINTMENT_DURATION_MINUTES))
+    return start_utc, end_utc
+
+
+def build_outlook_invite_url(subject, start_utc, end_utc, attendee_email="", body="", location=""):
+    """Builds an Outlook Web 'compose event' deep link — opens Outlook Web
+    with a new calendar event pre-filled from these details, ready for
+    whoever clicks it to review and send. It does not send anything by
+    itself. Uses the outlook.office.com (work/school) host; a personal
+    outlook.live.com account would need the same params on that host instead."""
+    params = {
+        "path": "/calendar/action/compose",
+        "rru": "addevent",
+        "subject": subject,
+        "startdt": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "enddt": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "allday": "false",
+    }
+    if body:
+        params["body"] = body
+    if location:
+        params["location"] = location
+    if attendee_email:
+        params["to"] = attendee_email
+    return "https://outlook.office.com/calendar/0/deeplink/compose?" + urlencode(params)
+
+
+def add_months(d, delta):
+    month_index = d.month - 1 + delta
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def render_appointment(appt, appointments):
+    """Renders one diary entry: time, account, attendee email, the Outlook
+    invite link, and a remove control. `appointments` is the live shared
+    list (from get_appointments_store()) — removal mutates it in place so
+    every viewer's next rerun picks up the change."""
+    start_utc, end_utc = appointment_datetimes_utc(appt)
+    outlook_url = build_outlook_invite_url(
+        subject=f"SYPLUS Review Visit — {appt['account_name']}",
+        start_utc=start_utc,
+        end_utc=end_utc,
+        attendee_email=appt.get("attendee_email", ""),
+        body=appt.get("notes", ""),
+    )
+    with st.container(border=True):
+        account_link = zoho_account_url(appt["account_id"])
+        st.markdown(
+            f"**{appt['time']}** — [{appt['account_name']}]({account_link}) "
+            f"_( {format_duration(appt.get('duration_minutes', DEFAULT_APPOINTMENT_DURATION_MINUTES))} )_"
+        )
+        if appt.get("attendee_email"):
+            st.caption(f"✉️ {appt['attendee_email']}")
+        if appt.get("notes"):
+            st.caption(appt["notes"])
+        st.link_button("📅 Add to Outlook", outlook_url, use_container_width=True)
+        if st.button("🗑️ Remove", key=f"remove_appt_{appt['id']}", use_container_width=True):
+            appointments[:] = [a for a in appointments if a["id"] != appt["id"]]
+            persist_appointments(appointments)
+            st.rerun()
 
 
 @st.cache_data(ttl=270)  # Zoho access tokens last 1hr; refresh well before that
@@ -496,6 +630,136 @@ if not long_df.empty:
             use_container_width=True,
             column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
         )
+
+st.divider()
+
+# --- Diary View ---
+st.subheader("🗓️ Diary — Booked Review Visits")
+st.caption(
+    "Entered by hand here, since Zoho only tracks the CX - Review Booked tag "
+    "itself, not a date — shared with everyone viewing this page, but may "
+    "reset if the app restarts (a redeploy, or waking up after a period of "
+    "inactivity). Ask about wiring this into a proper Zoho field if that "
+    "durability starts to matter."
+)
+
+appointments = get_appointments_store()
+
+with st.expander("➕ Add a booked visit"):
+    bookable_df = df[df["Booked"]].sort_values("Account Name")
+    if bookable_df.empty:
+        st.info(
+            "No accounts are currently tagged **CX - Review Booked** in Zoho — "
+            "tag one there first and it'll show up here to add a date against."
+        )
+    else:
+        with st.form("add_appointment_form", clear_on_submit=True):
+            account_options = dict(zip(bookable_df["Account Name"], bookable_df["Account ID"]))
+            selected_account_name = st.selectbox("Account", options=list(account_options.keys()))
+
+            form_cols = st.columns(3)
+            visit_date = form_cols[0].date_input("Date", value=date.today())
+            visit_time = form_cols[1].time_input("Start time", value=time(10, 0))
+            duration_minutes = form_cols[2].selectbox(
+                "Duration",
+                options=APPOINTMENT_DURATION_OPTIONS,
+                index=APPOINTMENT_DURATION_OPTIONS.index(DEFAULT_APPOINTMENT_DURATION_MINUTES),
+                format_func=format_duration,
+            )
+
+            attendee_email = st.text_input(
+                "Attendee email (optional — needed to pre-fill the Outlook invite)"
+            )
+            notes = st.text_area("Notes (optional)", height=68)
+            submitted = st.form_submit_button("Add to diary")
+
+            if submitted:
+                if attendee_email and "@" not in attendee_email:
+                    st.error("That doesn't look like a valid email address.")
+                else:
+                    appointments.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "account_id": account_options[selected_account_name],
+                            "account_name": selected_account_name,
+                            "date": visit_date.isoformat(),
+                            "time": visit_time.strftime("%H:%M"),
+                            "duration_minutes": duration_minutes,
+                            "attendee_email": attendee_email.strip(),
+                            "notes": notes.strip(),
+                            "created_at": datetime.now().isoformat(timespec="seconds"),
+                        }
+                    )
+                    persist_appointments(appointments)
+                    st.success(f"Added {selected_account_name} to the diary.")
+
+appointments_by_date = {}
+for appt in appointments:
+    appointments_by_date.setdefault(appt["date"], []).append(appt)
+for day_appts in appointments_by_date.values():
+    day_appts.sort(key=lambda a: a["time"])
+
+if "diary_ref_date" not in st.session_state:
+    st.session_state["diary_ref_date"] = date.today()
+
+view_mode = st.radio("View", options=["Week", "Month"], horizontal=True, key="diary_view_mode")
+
+nav_cols = st.columns([1, 1, 1, 4])
+if nav_cols[0].button("◀ Previous", use_container_width=True):
+    if view_mode == "Week":
+        st.session_state["diary_ref_date"] -= timedelta(days=7)
+    else:
+        st.session_state["diary_ref_date"] = add_months(st.session_state["diary_ref_date"], -1)
+if nav_cols[1].button("Today", use_container_width=True):
+    st.session_state["diary_ref_date"] = date.today()
+if nav_cols[2].button("Next ▶", use_container_width=True):
+    if view_mode == "Week":
+        st.session_state["diary_ref_date"] += timedelta(days=7)
+    else:
+        st.session_state["diary_ref_date"] = add_months(st.session_state["diary_ref_date"], 1)
+
+ref_date = st.session_state["diary_ref_date"]
+
+if view_mode == "Week":
+    week_start = ref_date - timedelta(days=ref_date.weekday())
+    week_days = [week_start + timedelta(days=i) for i in range(7)]
+    st.caption(f"Week of {week_start.strftime('%d %b %Y')}")
+
+    day_cols = st.columns(7)
+    for col, day in zip(day_cols, week_days):
+        with col:
+            is_today = day == date.today()
+            st.markdown(f"{'🔵 ' if is_today else ''}**{day.strftime('%a %d %b')}**")
+            day_appts = appointments_by_date.get(day.isoformat(), [])
+            if not day_appts:
+                st.caption("—")
+            else:
+                for appt in day_appts:
+                    render_appointment(appt, appointments)
+else:
+    st.caption(ref_date.strftime("%B %Y"))
+    weeks = calendar.monthcalendar(ref_date.year, ref_date.month)
+
+    header_cols = st.columns(7)
+    for col, day_name in zip(header_cols, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+        col.markdown(f"**{day_name}**")
+
+    for week in weeks:
+        week_cols = st.columns(7)
+        for col, day_num in zip(week_cols, week):
+            with col:
+                with st.container(border=True):
+                    if day_num == 0:
+                        st.markdown("&nbsp;")
+                        continue
+                    day_date = date(ref_date.year, ref_date.month, day_num)
+                    is_today = day_date == date.today()
+                    st.markdown(f"{'🔵 ' if is_today else ''}**{day_num}**")
+                    day_appts = appointments_by_date.get(day_date.isoformat(), [])
+                    if day_appts:
+                        with st.popover(f"{len(day_appts)} 📅", use_container_width=True):
+                            for appt in day_appts:
+                                render_appointment(appt, appointments)
 
 st.divider()
 
