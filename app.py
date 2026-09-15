@@ -452,13 +452,18 @@ for tag in EAGERNESS_ORDER:
             with st.container(border=True):
                 badge = "🔥 " if (tag, feas) == HOTTEST_CELL else ""
                 st.markdown(f"{badge}**{len(cell_df)}**")
+                booked_count = int(cell_df["Booked"].sum())
+                if booked_count:
+                    st.caption(f"📅 {booked_count} booked")
                 if not cell_df.empty:
                     with st.popover("View accounts", use_container_width=True):
                         for _, acc in cell_df.iterrows():
                             contact = acc["Primary Contact"] or "No primary contact on file"
                             account_link = zoho_account_url(acc["Account ID"])
+                            booked_marker = " · 📅 Booked" if acc["Booked"] else ""
                             st.markdown(
-                                f"**[{acc['Account Name']}]({account_link})** — {acc['Time Remaining']}  \n"
+                                f"**[{acc['Account Name']}]({account_link})** — "
+                                f"{acc['Time Remaining']}{booked_marker}  \n"
                                 f"_{contact}_"
                             )
 
