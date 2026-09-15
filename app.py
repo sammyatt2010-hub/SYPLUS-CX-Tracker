@@ -556,6 +556,19 @@ df["Primary Contact Email"] = ""
 for account_id, contact in contacts_lookup.items():
     df.loc[df["Account ID"] == account_id, "Primary Contact Email"] = contact.get("email", "")
 
+# Pull real booked Meetings from Zoho now (rather than down in the Diary
+# section) so the top-line KPI and Priority Matrix can reflect an actual
+# booking the moment it's made in Zoho — not just accounts someone has
+# manually tagged "CX - Review Booked". A booking counts as long as either
+# is true, so nothing that relied on the tag alone stops being counted.
+try:
+    appointments, diary_error = get_diary_appointments(df)
+except Exception as err:
+    appointments, diary_error = [], str(err)
+
+booked_account_ids = {a["account_id"] for a in appointments}
+df["Booked"] = df["Booked"] | df["Account ID"].isin(booked_account_ids)
+
 
 # --- Data Prep: contract end date, time remaining, feasibility tier ---
 def parse_zoho_date(value):
@@ -655,7 +668,9 @@ kpi_cols = st.columns(len(EAGERNESS_ORDER) + 2)
 kpi_cols[0].metric("SYPLUS Accounts Tracked", f"{len(filtered_df)}")
 for col, tag in zip(kpi_cols[1:-1], EAGERNESS_ORDER):
     col.metric(EAGERNESS_LABEL[tag], f"{len(filtered_df[filtered_df['CX Tag'] == tag])}")
-kpi_cols[-1].metric("📅 Booked Appointments", f"{len(filtered_df[filtered_df['Booked']])}")
+filtered_account_ids = set(filtered_df["Account ID"])
+appointment_count = sum(1 for a in appointments if a["account_id"] in filtered_account_ids)
+kpi_cols[-1].metric("📅 Booked Appointments", f"{appointment_count}")
 
 st.divider()
 
@@ -739,8 +754,6 @@ st.caption(
     "deals. Cancelling or rescheduling happens in Zoho itself; this just "
     "reflects it."
 )
-
-appointments, diary_error = get_diary_appointments(df)
 
 if diary_error:
     st.error(f"🚨 Could not load Meetings from Zoho: {diary_error}")
