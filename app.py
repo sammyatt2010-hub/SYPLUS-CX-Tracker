@@ -8,6 +8,36 @@ import streamlit as st
 st.set_page_config(
     page_title="SYPLUS CX Command Center", page_icon="🧭", layout="wide"
 )
+
+
+# --- Simple password gate ---
+def check_password():
+    """Ask for a password before showing anything else on the page. The
+    correct password lives in Streamlit secrets (app_password) rather than
+    in this file, so it can be changed later without touching the code."""
+
+    def password_entered():
+        if st.session_state.get("password_input") == st.secrets.get("app_password", ""):
+            st.session_state["password_correct"] = True
+            del st.session_state["password_input"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct"):
+        return True
+
+    st.text_input(
+        "🔒 Password", type="password", on_change=password_entered, key="password_input"
+    )
+    if st.session_state.get("password_correct") is False:
+        st.error("Incorrect password")
+    return False
+
+
+if not check_password():
+    st.stop()
+
+
 st.title("🧭 SYPLUS Customer Experience Command Center")
 st.caption(
     "Live from Zoho CRM — SYPLUS accounts tagged for CX follow-up, "
