@@ -1,11 +1,7 @@
 import calendar
-import json
-import os
 import re
-import uuid
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -146,52 +142,15 @@ def zoho_account_url(account_id):
     return f"https://crm.zoho.eu/crm/org{ZOHO_ORG_ID}/tab/Accounts/{account_id}"
 
 
-# --- Diary: manually-entered booked visit dates ---
-# Zoho doesn't currently track a visit date/time, just the CX - Review Booked
-# tag itself, so these are entered by hand in this app rather than pulled
-# from Zoho. They're all assumed to be in UK local time.
-BUSINESS_TIMEZONE = "Europe/London"
-APPOINTMENT_DURATION_OPTIONS = [15, 30, 45, 60, 90, 120]
-DEFAULT_APPOINTMENT_DURATION_MINUTES = 30
-APPOINTMENTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diary_appointments.json")
-
-
-@st.cache_resource
-def get_appointments_store():
-    """A shared, in-memory list of manually-booked diary appointments, visible
-    to every viewer of this running app — st.cache_resource (unlike
-    st.session_state, which is private per browser session) hands back the
-    exact same object to everyone, so appending to it here is visible to the
-    whole team immediately. Backed by a small JSON file on disk so entries
-    also survive an ordinary app restart.
-
-    Caveat, worth knowing: this is NOT as durable as the Zoho data elsewhere
-    on this page. If Streamlit Cloud spins up a fresh copy of the app (a
-    redeploy, or waking up after a period of inactivity), that starts from a
-    clean checkout of the code and this file resets to empty. It's a
-    deliberately lightweight stand-in since visit dates aren't tracked in
-    Zoho today — ask about wiring this into a proper Zoho field later if
-    full durability matters."""
-    appointments = []
-    if os.path.exists(APPOINTMENTS_FILE):
-        try:
-            with open(APPOINTMENTS_FILE) as f:
-                appointments = json.load(f)
-        except Exception:
-            appointments = []
-    return appointments
-
-
-def persist_appointments(appointments):
-    """Best-effort write-through to disk. On failure, the in-memory copy
-    (still held by get_appointments_store's cached singleton) carries on
-    working for the rest of this app's run — it just won't survive a
-    restart."""
-    try:
-        with open(APPOINTMENTS_FILE, "w") as f:
-            json.dump(appointments, f, indent=2)
-    except Exception:
-        pass
+# --- Diary: booked visits, read live from Zoho's Meetings module ---
+# The Zoho CRM UI calls this tab "Meetings" (see the left-hand nav), but its
+# REST API module name is the standard "Events" — the same kind of UI-label
+# vs api_name mismatch already hit with Legal Contracts (CustomModule4 ->
+# Contracts) and Deals (Potentials -> Deals) earlier on. If this turns out to
+# be wrong for this org, Zoho's own error message below will say so plainly
+# (e.g. INVALID_MODULE) rather than failing silently.
+EVENTS_MODULE = "Events"
+EVENT_FIELDS = "Event_Title,Start_DateTime,End_DateTime,What_Id"
 
 
 def format_duration(minutes):
@@ -201,16 +160,139 @@ def format_duration(minutes):
     return f"{hours}h" + (f" {rem}m" if rem else "")
 
 
-def appointment_datetimes_utc(appt):
-    """Combines an appointment's stored local date/time into UK-local-aware
-    start/end datetimes, then converts to UTC — Outlook's deep-link URLs
-    expect UTC, and using a real timezone (rather than a fixed offset) keeps
-    this correct across the BST/GMT clock change automatically."""
-    local_dt = datetime.strptime(f"{appt['date']} {appt['time']}", "%Y-%m-%d %H:%M")
-    local_dt = local_dt.replace(tzinfo=ZoneInfo(BUSINESS_TIMEZONE))
-    start_utc = local_dt.astimezone(timezone.utc)
-    end_utc = start_utc + timedelta(minutes=appt.get("duration_minutes", DEFAULT_APPOINTMENT_DURATION_MINUTES))
-    return start_utc, end_utc
+@st.cache_data(ttl=60)
+def load_meetings():
+    """Pulls every Meeting (Zoho's 'Events' module) so booked visits can be
+    matched back to the accounts they're linked to. Not filtered server-side
+    by account — matching happens in Python once fetched, same pattern as
+    everywhere else in this file."""
+    token = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    records = []
+    page = 1
+    while True:
+        try:
+            resp = requests.get(
+                f"{ZOHO_API_DOMAIN}/crm/v2/{EVENTS_MODULE}",
+                headers=headers,
+                params={
+                    "fields": EVENT_FIELDS,
+                    "per_page": 200,
+                    "page": page,
+                    "sort_by": "Start_DateTime",
+                    "sort_order": "asc",
+                },
+                timeout=20,
+            )
+        except Exception as err:
+            raise RuntimeError(f"Could not reach Zoho CRM API. Details: {err}")
+
+        if resp.status_code == 204:
+            break  # no meetings at all
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Zoho CRM API returned an error fetching Meetings "
+                f"(status {resp.status_code}): {resp.text}"
+            )
+
+        payload = resp.json()
+        records.extend(payload.get("data", []))
+        info = payload.get("info", {})
+        if not info.get("more_records"):
+            break
+        page += 1
+
+    return records
+
+
+@st.cache_data(ttl=60)
+def load_deal_account_map():
+    """Maps each Deal's id to its parent Account id, so a Meeting booked
+    against a Deal record (rather than the Account itself) can still be
+    matched back to the right account for the diary."""
+    token = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    mapping = {}
+    page = 1
+    while True:
+        try:
+            resp = requests.get(
+                f"{ZOHO_API_DOMAIN}/crm/v2/Deals",
+                headers=headers,
+                params={"fields": "Account_Name", "per_page": 200, "page": page},
+                timeout=20,
+            )
+        except Exception:
+            break  # best-effort — meetings booked directly against the Account still match
+        if resp.status_code != 200:
+            break
+
+        payload = resp.json()
+        for d in payload.get("data", []):
+            account = d.get("Account_Name") or {}
+            if d.get("id") and account.get("id"):
+                mapping[d["id"]] = account["id"]
+
+        if not payload.get("info", {}).get("more_records"):
+            break
+        page += 1
+
+    return mapping
+
+
+def get_diary_appointments(accounts_df):
+    """Resolves booked Meetings from Zoho into diary entries for the given
+    accounts — matching each Meeting's What_Id against the account directly,
+    or against one of its Deals. Returns (appointments, error_message); on
+    failure, appointments is [] and error_message explains why, so the rest
+    of the page can carry on rendering rather than crashing."""
+    try:
+        events = load_meetings()
+    except Exception as err:
+        return [], str(err)
+
+    try:
+        deal_to_account = load_deal_account_map()
+    except Exception:
+        deal_to_account = {}
+
+    account_ids = set(accounts_df["Account ID"])
+    account_names = dict(zip(accounts_df["Account ID"], accounts_df["Account Name"]))
+
+    appointments = []
+    for e in events:
+        what = e.get("What_Id") or {}
+        related_id = what.get("id") if isinstance(what, dict) else None
+        if not related_id:
+            continue
+
+        account_id = related_id if related_id in account_ids else deal_to_account.get(related_id)
+        if account_id not in account_ids:
+            continue  # not linked to one of our tracked accounts
+
+        start_dt = pd.to_datetime(e.get("Start_DateTime"), errors="coerce")
+        if pd.isna(start_dt):
+            continue
+        end_dt = pd.to_datetime(e.get("End_DateTime"), errors="coerce")
+        if pd.isna(end_dt):
+            end_dt = start_dt + timedelta(minutes=30)
+
+        appointments.append(
+            {
+                "id": e.get("id"),
+                "account_id": account_id,
+                "account_name": account_names.get(account_id, ""),
+                "title": e.get("Event_Title") or "Review Visit",
+                "date": start_dt.date().isoformat(),
+                "time": start_dt.strftime("%H:%M"),
+                "start_dt": start_dt,
+                "end_dt": end_dt,
+            }
+        )
+
+    return appointments, None
 
 
 def build_outlook_invite_url(subject, start_utc, end_utc, attendee_email="", body="", location=""):
@@ -244,34 +326,33 @@ def add_months(d, delta):
     return date(year, month, day)
 
 
-def render_appointment(appt, appointments):
-    """Renders one diary entry: time, account, attendee email, the Outlook
-    invite link, and a remove control. `appointments` is the live shared
-    list (from get_appointments_store()) — removal mutates it in place so
-    every viewer's next rerun picks up the change."""
-    start_utc, end_utc = appointment_datetimes_utc(appt)
+def render_appointment(appt, contact_email=""):
+    """Renders one diary entry: time, title, account, and an Outlook invite
+    link built from the meeting's real start/end time. There's no remove
+    control here any more — these come straight from Zoho, so cancelling or
+    rescheduling happens there, not in this read-only view."""
+    start_dt = appt["start_dt"]
+    end_dt = appt["end_dt"]
+    # Zoho returns these with a real UTC offset already attached (e.g.
+    # +01:00 during BST), so converting straight to UTC is correct without
+    # having to guess or track the timezone ourselves.
+    start_utc = start_dt.tz_convert("UTC") if start_dt.tzinfo else start_dt.tz_localize("UTC")
+    end_utc = end_dt.tz_convert("UTC") if end_dt.tzinfo else end_dt.tz_localize("UTC")
     outlook_url = build_outlook_invite_url(
-        subject=f"SYPLUS Review Visit — {appt['account_name']}",
-        start_utc=start_utc,
-        end_utc=end_utc,
-        attendee_email=appt.get("attendee_email", ""),
-        body=appt.get("notes", ""),
+        subject=appt["title"],
+        start_utc=start_utc.to_pydatetime(),
+        end_utc=end_utc.to_pydatetime(),
+        attendee_email=contact_email,
     )
     with st.container(border=True):
         account_link = zoho_account_url(appt["account_id"])
+        duration_minutes = int((end_dt - start_dt).total_seconds() // 60)
         st.markdown(
-            f"**{appt['time']}** — [{appt['account_name']}]({account_link}) "
-            f"_( {format_duration(appt.get('duration_minutes', DEFAULT_APPOINTMENT_DURATION_MINUTES))} )_"
+            f"**{appt['time']}** — [{appt['account_name']}]({account_link})  \n"
+            f"_{appt['title']}"
+            + (f" ({format_duration(duration_minutes)})_" if duration_minutes > 0 else "_")
         )
-        if appt.get("attendee_email"):
-            st.caption(f"✉️ {appt['attendee_email']}")
-        if appt.get("notes"):
-            st.caption(appt["notes"])
         st.link_button("📅 Add to Outlook", outlook_url, use_container_width=True)
-        if st.button("🗑️ Remove", key=f"remove_appt_{appt['id']}", use_container_width=True):
-            appointments[:] = [a for a in appointments if a["id"] != appt["id"]]
-            persist_appointments(appointments)
-            st.rerun()
 
 
 @st.cache_data(ttl=270)  # Zoho access tokens last 1hr; refresh well before that
@@ -383,7 +464,9 @@ def get_contacts_lookup():
     of paginated requests) rather than one request per account — much faster
     than looking up each account's contacts one at a time. Picks whichever
     linked contact has a mobile or phone number on file (preferring mobile),
-    so the number is one someone can actually ring."""
+    so the number is one someone can actually ring. Also keeps an email
+    address where there is one, used to default the Diary's Outlook invite
+    link to that contact rather than leaving it blank."""
     token = get_access_token()
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
 
@@ -395,7 +478,7 @@ def get_contacts_lookup():
                 f"{ZOHO_API_DOMAIN}/crm/v2/Contacts",
                 headers=headers,
                 params={
-                    "fields": "Account_Name,Full_Name,Phone,Mobile",
+                    "fields": "Account_Name,Full_Name,Phone,Mobile,Email",
                     "per_page": 200,
                     "page": page,
                 },
@@ -424,9 +507,11 @@ def get_contacts_lookup():
         best = next((c for c in contacts if c.get("Mobile")), None)
         if best is None:
             best = next((c for c in contacts if c.get("Phone")), contacts[0])
+        best_with_email = next((c for c in contacts if c.get("Email")), best)
         contacts_by_account[account_id] = {
             "name": best.get("Full_Name") or "",
             "number": best.get("Mobile") or best.get("Phone") or "",
+            "email": best_with_email.get("Email") or "",
         }
 
     return contacts_by_account
@@ -459,6 +544,14 @@ for account_id, contact in contacts_lookup.items():
     mask = needs_lookup & (df["Account ID"] == account_id)
     df.loc[mask, "Primary Contact"] = contact["name"]
     df.loc[mask, "Primary Contact Number"] = contact["number"]
+
+# A contact email, when there's one on file — used to default the Diary's
+# Outlook invite link to someone real rather than leaving it blank. Filled
+# in for every account with a matching contact, not just the fallback case
+# above, since the Account record itself has nowhere to hold an email.
+df["Primary Contact Email"] = ""
+for account_id, contact in contacts_lookup.items():
+    df.loc[df["Account ID"] == account_id, "Primary Contact Email"] = contact.get("email", "")
 
 
 # --- Data Prep: contract end date, time remaining, feasibility tier ---
@@ -636,62 +729,17 @@ st.divider()
 # --- Diary View ---
 st.subheader("🗓️ Diary — Booked Review Visits")
 st.caption(
-    "Entered by hand here, since Zoho only tracks the CX - Review Booked tag "
-    "itself, not a date — shared with everyone viewing this page, but may "
-    "reset if the app restarts (a redeploy, or waking up after a period of "
-    "inactivity). Ask about wiring this into a proper Zoho field if that "
-    "durability starts to matter."
+    "Live from Zoho's Meetings — booked against an account or one of its "
+    "deals. Cancelling or rescheduling happens in Zoho itself; this just "
+    "reflects it."
 )
 
-appointments = get_appointments_store()
+appointments, diary_error = get_diary_appointments(df)
 
-with st.expander("➕ Add a booked visit"):
-    bookable_df = df[df["Booked"]].sort_values("Account Name")
-    if bookable_df.empty:
-        st.info(
-            "No accounts are currently tagged **CX - Review Booked** in Zoho — "
-            "tag one there first and it'll show up here to add a date against."
-        )
-    else:
-        with st.form("add_appointment_form", clear_on_submit=True):
-            account_options = dict(zip(bookable_df["Account Name"], bookable_df["Account ID"]))
-            selected_account_name = st.selectbox("Account", options=list(account_options.keys()))
+if diary_error:
+    st.error(f"🚨 Could not load Meetings from Zoho: {diary_error}")
 
-            form_cols = st.columns(3)
-            visit_date = form_cols[0].date_input("Date", value=date.today())
-            visit_time = form_cols[1].time_input("Start time", value=time(10, 0))
-            duration_minutes = form_cols[2].selectbox(
-                "Duration",
-                options=APPOINTMENT_DURATION_OPTIONS,
-                index=APPOINTMENT_DURATION_OPTIONS.index(DEFAULT_APPOINTMENT_DURATION_MINUTES),
-                format_func=format_duration,
-            )
-
-            attendee_email = st.text_input(
-                "Attendee email (optional — needed to pre-fill the Outlook invite)"
-            )
-            notes = st.text_area("Notes (optional)", height=68)
-            submitted = st.form_submit_button("Add to diary")
-
-            if submitted:
-                if attendee_email and "@" not in attendee_email:
-                    st.error("That doesn't look like a valid email address.")
-                else:
-                    appointments.append(
-                        {
-                            "id": str(uuid.uuid4()),
-                            "account_id": account_options[selected_account_name],
-                            "account_name": selected_account_name,
-                            "date": visit_date.isoformat(),
-                            "time": visit_time.strftime("%H:%M"),
-                            "duration_minutes": duration_minutes,
-                            "attendee_email": attendee_email.strip(),
-                            "notes": notes.strip(),
-                            "created_at": datetime.now().isoformat(timespec="seconds"),
-                        }
-                    )
-                    persist_appointments(appointments)
-                    st.success(f"Added {selected_account_name} to the diary.")
+contact_emails = dict(zip(df["Account ID"], df["Primary Contact Email"]))
 
 appointments_by_date = {}
 for appt in appointments:
@@ -735,7 +783,7 @@ if view_mode == "Week":
                 st.caption("—")
             else:
                 for appt in day_appts:
-                    render_appointment(appt, appointments)
+                    render_appointment(appt, contact_emails.get(appt["account_id"], ""))
 else:
     st.caption(ref_date.strftime("%B %Y"))
     weeks = calendar.monthcalendar(ref_date.year, ref_date.month)
@@ -759,7 +807,7 @@ else:
                     if day_appts:
                         with st.popover(f"{len(day_appts)} 📅", use_container_width=True):
                             for appt in day_appts:
-                                render_appointment(appt, appointments)
+                                render_appointment(appt, contact_emails.get(appt["account_id"], ""))
 
 st.divider()
 
