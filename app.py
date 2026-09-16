@@ -1,7 +1,6 @@
 import calendar
 import re
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -153,7 +152,7 @@ def zoho_account_url(account_id):
 # be wrong for this org, Zoho's own error message below will say so plainly
 # (e.g. INVALID_MODULE) rather than failing silently.
 EVENTS_MODULE = "Events"
-EVENT_FIELDS = "Event_Title,Start_DateTime,End_DateTime,What_Id"
+EVENT_FIELDS = "Event_Title,Start_DateTime,End_DateTime,What_Id,Owner"
 
 
 def format_duration(minutes):
@@ -282,12 +281,16 @@ def get_diary_appointments(accounts_df):
         if pd.isna(end_dt):
             end_dt = start_dt + timedelta(minutes=30)
 
+        owner = e.get("Owner") or {}
+        consultant = owner.get("name") if isinstance(owner, dict) else ""
+
         appointments.append(
             {
                 "id": e.get("id"),
                 "account_id": account_id,
                 "account_name": account_names.get(account_id, ""),
                 "title": e.get("Event_Title") or "Review Visit",
+                "consultant": consultant or "",
                 "date": start_dt.date().isoformat(),
                 "time": start_dt.strftime("%H:%M"),
                 "start_dt": start_dt,
@@ -298,29 +301,6 @@ def get_diary_appointments(accounts_df):
     return appointments, None
 
 
-def build_outlook_invite_url(subject, start_utc, end_utc, attendee_email="", body="", location=""):
-    """Builds an Outlook Web 'compose event' deep link — opens Outlook Web
-    with a new calendar event pre-filled from these details, ready for
-    whoever clicks it to review and send. It does not send anything by
-    itself. Uses the outlook.office.com (work/school) host; a personal
-    outlook.live.com account would need the same params on that host instead."""
-    params = {
-        "path": "/calendar/action/compose",
-        "rru": "addevent",
-        "subject": subject,
-        "startdt": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "enddt": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "allday": "false",
-    }
-    if body:
-        params["body"] = body
-    if location:
-        params["location"] = location
-    if attendee_email:
-        params["to"] = attendee_email
-    return "https://outlook.office.com/calendar/0/deeplink/compose?" + urlencode(params)
-
-
 def add_months(d, delta):
     month_index = d.month - 1 + delta
     year = d.year + month_index // 12
@@ -329,24 +309,12 @@ def add_months(d, delta):
     return date(year, month, day)
 
 
-def render_appointment(appt, contact_email=""):
-    """Renders one diary entry: time, title, account, and an Outlook invite
-    link built from the meeting's real start/end time. There's no remove
-    control here any more — these come straight from Zoho, so cancelling or
-    rescheduling happens there, not in this read-only view."""
+def render_appointment(appt):
+    """Renders one diary entry: time, title, account, and the consultant
+    it's booked with. Read-only — these come straight from Zoho, so
+    cancelling or rescheduling happens there, not in this view."""
     start_dt = appt["start_dt"]
     end_dt = appt["end_dt"]
-    # Zoho returns these with a real UTC offset already attached (e.g.
-    # +01:00 during BST), so converting straight to UTC is correct without
-    # having to guess or track the timezone ourselves.
-    start_utc = start_dt.tz_convert("UTC") if start_dt.tzinfo else start_dt.tz_localize("UTC")
-    end_utc = end_dt.tz_convert("UTC") if end_dt.tzinfo else end_dt.tz_localize("UTC")
-    outlook_url = build_outlook_invite_url(
-        subject=appt["title"],
-        start_utc=start_utc.to_pydatetime(),
-        end_utc=end_utc.to_pydatetime(),
-        attendee_email=contact_email,
-    )
     with st.container(border=True):
         account_link = zoho_account_url(appt["account_id"])
         duration_minutes = int((end_dt - start_dt).total_seconds() // 60)
@@ -355,7 +323,8 @@ def render_appointment(appt, contact_email=""):
             f"_{appt['title']}"
             + (f" ({format_duration(duration_minutes)})_" if duration_minutes > 0 else "_")
         )
-        st.link_button("📅 Add to Outlook", outlook_url, use_container_width=True)
+        if appt["consultant"]:
+            st.caption(f"👤 {appt['consultant']}")
 
 
 @st.cache_data(ttl=270)  # Zoho access tokens last 1hr; refresh well before that
@@ -469,9 +438,7 @@ def get_contacts_lookup():
     of paginated requests) rather than one request per account — much faster
     than looking up each account's contacts one at a time. Picks whichever
     linked contact has a mobile or phone number on file (preferring mobile),
-    so the number is one someone can actually ring. Also keeps an email
-    address where there is one, used to default the Diary's Outlook invite
-    link to that contact rather than leaving it blank."""
+    so the number is one someone can actually ring."""
     token = get_access_token()
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
 
@@ -483,7 +450,7 @@ def get_contacts_lookup():
                 f"{ZOHO_API_DOMAIN}/crm/v2/Contacts",
                 headers=headers,
                 params={
-                    "fields": "Account_Name,Full_Name,Phone,Mobile,Email",
+                    "fields": "Account_Name,Full_Name,Phone,Mobile",
                     "per_page": 200,
                     "page": page,
                 },
@@ -512,11 +479,9 @@ def get_contacts_lookup():
         best = next((c for c in contacts if c.get("Mobile")), None)
         if best is None:
             best = next((c for c in contacts if c.get("Phone")), contacts[0])
-        best_with_email = next((c for c in contacts if c.get("Email")), best)
         contacts_by_account[account_id] = {
             "name": best.get("Full_Name") or "",
             "number": best.get("Mobile") or best.get("Phone") or "",
-            "email": best_with_email.get("Email") or "",
         }
 
     return contacts_by_account
@@ -549,14 +514,6 @@ for account_id, contact in contacts_lookup.items():
     mask = needs_lookup & (df["Account ID"] == account_id)
     df.loc[mask, "Primary Contact"] = contact["name"]
     df.loc[mask, "Primary Contact Number"] = contact["number"]
-
-# A contact email, when there's one on file — used to default the Diary's
-# Outlook invite link to someone real rather than leaving it blank. Filled
-# in for every account with a matching contact, not just the fallback case
-# above, since the Account record itself has nowhere to hold an email.
-df["Primary Contact Email"] = ""
-for account_id, contact in contacts_lookup.items():
-    df.loc[df["Account ID"] == account_id, "Primary Contact Email"] = contact.get("email", "")
 
 # Pull real booked Meetings from Zoho now (rather than down in the Diary
 # section) so the top-line KPI and Priority Matrix reflect an actual booking
@@ -761,8 +718,6 @@ st.caption(
 if diary_error:
     st.error(f"🚨 Could not load Meetings from Zoho: {diary_error}")
 
-contact_emails = dict(zip(df["Account ID"], df["Primary Contact Email"]))
-
 appointments_by_date = {}
 for appt in appointments:
     appointments_by_date.setdefault(appt["date"], []).append(appt)
@@ -805,7 +760,7 @@ if view_mode == "Week":
                 st.caption("—")
             else:
                 for appt in day_appts:
-                    render_appointment(appt, contact_emails.get(appt["account_id"], ""))
+                    render_appointment(appt)
 else:
     st.caption(ref_date.strftime("%B %Y"))
     weeks = calendar.monthcalendar(ref_date.year, ref_date.month)
@@ -829,7 +784,7 @@ else:
                     if day_appts:
                         with st.popover(f"{len(day_appts)} 📅", use_container_width=True):
                             for appt in day_appts:
-                                render_appointment(appt, contact_emails.get(appt["account_id"], ""))
+                                render_appointment(appt)
 
 st.divider()
 
