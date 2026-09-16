@@ -77,7 +77,7 @@ EAGERNESS_LABEL = {
     "CX - Leaving": "Leaving (at risk)",
 }
 
-FEASIBILITY_ORDER = ["< 12 months", "1–3 years", "3–7 years", "7+ years", "Unknown"]
+FEASIBILITY_ORDER = ["0–2 years", "2–4 years", "4–7 years", "7+ years", "Unknown"]
 
 # Royal Mail's official UK postcode area codes and their head-town names —
 # e.g. postcode "CH1 2AB" starts with area code "CH", which is Chester. This
@@ -550,12 +550,12 @@ df["Days Remaining"] = (df["Contract End Date"] - today).dt.days
 def feasibility_tier(days):
     if pd.isna(days):
         return "Unknown"
-    if days <= 365:  # includes contracts already ended
-        return "< 12 months"
-    if days <= 365 * 3:
-        return "1–3 years"
+    if days <= 365 * 2:  # includes contracts already ended
+        return "0–2 years"
+    if days <= 365 * 4:
+        return "2–4 years"
     if days <= 365 * 7:
-        return "3–7 years"
+        return "4–7 years"
     return "7+ years"
 
 
@@ -641,8 +641,8 @@ st.caption(
     "across the top. The top-left corner is where to focus first."
 )
 
-MATRIX_FEASIBILITY = ["< 12 months", "1–3 years", "3–7 years"]
-HOTTEST_CELL = ("CX - Eager", "< 12 months")  # eager + contract ending soon = act now
+MATRIX_FEASIBILITY = ["0–2 years", "2–4 years", "4–7 years"]
+HOTTEST_CELL = ("CX - Eager", "0–2 years")  # eager + contract ending soon = act now
 
 header_cols = st.columns([1.3] + [1] * len(MATRIX_FEASIBILITY))
 header_cols[0].markdown("**Eagerness \\ Feasibility**")
@@ -690,7 +690,7 @@ if not unknown_df.empty:
             column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
         )
 
-# The matrix above only shows up to 3–7 years since no contract currently runs
+# The matrix above only shows up to 4–7 years since no contract currently runs
 # longer — but if one ever does, it's flagged here rather than silently dropped.
 long_df = filtered_df[filtered_df["Feasibility"] == "7+ years"].copy()
 if not long_df.empty:
