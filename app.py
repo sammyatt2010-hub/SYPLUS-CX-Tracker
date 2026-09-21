@@ -160,7 +160,7 @@ def zoho_account_url(account_id):
 # be wrong for this org, Zoho's own error message below will say so plainly
 # (e.g. INVALID_MODULE) rather than failing silently.
 EVENTS_MODULE = "Events"
-EVENT_FIELDS = "Event_Title,Start_DateTime,End_DateTime,What_Id,Owner"
+EVENT_FIELDS = "Event_Title,Start_DateTime,End_DateTime,What_Id,Owner,Participants"
 
 # Consultant availability isn't tracked as its own thing in Zoho — instead,
 # the account manager marks a day directly in Zoho's calendar as an all-day
@@ -184,6 +184,31 @@ def classify_availability_title(title):
     if AVAILABLE_KEYWORD in t:
         return "available"
     return None
+
+
+def event_consultants(e):
+    """Who an availability block actually belongs to. A consultant marking
+    their own day just owns the Meeting themselves, so Owner is right. But
+    an account manager booking it on a consultant's behalf — inviting them
+    as a participant rather than owning it — means Owner is the account
+    manager, not the consultant. So: every invited participant of type
+    'user' except whoever owns the record, falling back to the Owner alone
+    when that leaves nothing (the "marking your own day" case). This also
+    means inviting several consultants to one block covers all of them."""
+    owner = e.get("Owner") or {}
+    owner_name = owner.get("name") if isinstance(owner, dict) else ""
+
+    participants = e.get("Participants") or []
+    names = {
+        p.get("name")
+        for p in participants
+        if isinstance(p, dict) and p.get("type") == "user" and p.get("name")
+    }
+    names.discard(owner_name)
+
+    if not names:
+        names = {owner_name} if owner_name else {"Unknown"}
+    return names
 
 
 def format_duration(minutes):
@@ -342,8 +367,10 @@ def get_availability_blocks():
     availability_title above), regardless of what account (if any) it's
     booked against. A block spanning several days only needs one Meeting in
     Zoho: every calendar date from its start to its end (inclusive) counts,
-    for whoever owns it. Returns ({date_iso: {"available": {names},
-    "unavailable": {names}}}, error_message)."""
+    for whoever it belongs to (see event_consultants above — the invited
+    consultant if an account manager booked it on their behalf, or the
+    owner if a consultant marked their own day). Returns ({date_iso:
+    {"available": {names}, "unavailable": {names}}}, error_message)."""
     try:
         events = load_meetings()
     except Exception as err:
@@ -363,8 +390,7 @@ def get_availability_blocks():
         if pd.isna(end_dt):
             end_dt = start_dt
 
-        owner = e.get("Owner") or {}
-        consultant = (owner.get("name") if isinstance(owner, dict) else "") or "Unknown"
+        consultants = event_consultants(e)
 
         day = start_dt.date()
         last_day = end_dt.date()
@@ -372,7 +398,7 @@ def get_availability_blocks():
             day_entry = blocks_by_date.setdefault(
                 day.isoformat(), {"available": set(), "unavailable": set()}
             )
-            day_entry[kind].add(consultant)
+            day_entry[kind] |= consultants
             day += timedelta(days=1)
 
     return blocks_by_date, None
