@@ -69,12 +69,20 @@ BOOKED_TAG = "CX - Review Booked"
 
 # Eagerness ranking, highest priority first. Matches the colour-coding used
 # on the tags inside Zoho (green / purple / yellow / red).
-EAGERNESS_ORDER = ["CX - Eager", "CX - Upgrade Potential", "CX - Review - Neutral", "CX - Leaving"]
+REAL_CX_TAGS = ["CX - Eager", "CX - Upgrade Potential", "CX - Review - Neutral", "CX - Leaving"]
+
+# Not a real Zoho tag — a SYPLUS account with none of the four CX tags above
+# still belongs on this wallboard (the account manager needs to see it), it
+# just falls into this catch-all bucket instead of one of the four.
+NO_CX_TAG = "No CX Tag"
+
+EAGERNESS_ORDER = REAL_CX_TAGS + [NO_CX_TAG]
 EAGERNESS_LABEL = {
     "CX - Eager": "Eager",
     "CX - Upgrade Potential": "Upgrade Potential",
     "CX - Review - Neutral": "Review – Neutral",
     "CX - Leaving": "Leaving (at risk)",
+    NO_CX_TAG: "No CX Tag",
 }
 
 FEASIBILITY_ORDER = ["0–2 years", "2–4 years", "4–7 years", "7+ years", "Unknown"]
@@ -403,10 +411,11 @@ def load_accounts():
         if SYPLUS_TAG not in tag_names:
             continue
 
-        # Pick the highest-priority CX tag present on this account, if any.
-        cx_tag = next((t for t in EAGERNESS_ORDER if t in tag_names), None)
-        if cx_tag is None:
-            continue  # SYPLUS account with no CX status tag yet — not actionable here
+        # Pick the highest-priority CX tag present on this account. A SYPLUS
+        # account with none of the four still needs to be visible to the
+        # account manager, so it falls into the NO_CX_TAG bucket rather than
+        # being dropped.
+        cx_tag = next((t for t in REAL_CX_TAGS if t in tag_names), None) or NO_CX_TAG
 
         rows.append(
             {
@@ -496,9 +505,8 @@ except Exception as e:
 
 if df.empty:
     st.warning(
-        "No SYPLUS accounts with a CX tag were found. Check that accounts in Zoho "
-        "carry both the **SYPLUS** tag and one of the CX status tags "
-        "(CX - Eager, CX - Upgrade Potential, CX - Review - Neutral, CX - Leaving)."
+        "No SYPLUS accounts were found. Check that accounts in Zoho carry the "
+        "**SYPLUS** tag."
     )
     st.stop()
 
@@ -637,8 +645,9 @@ st.divider()
 # --- Eagerness x Feasibility Matrix ---
 st.subheader("🎯 Priority Matrix")
 st.caption(
-    "Eagerness (from CX tag) down the side, feasibility (time left on contract) "
-    "across the top. The top-left corner is where to focus first."
+    "Eagerness (from CX tag, or 'No CX Tag' where none is set yet) down the "
+    "side, feasibility (time left on contract) across the top. The top-left "
+    "corner is where to focus first."
 )
 
 MATRIX_FEASIBILITY = ["0–2 years", "2–4 years", "4–7 years"]
@@ -718,8 +727,22 @@ st.caption(
 if diary_error:
     st.error(f"🚨 Could not load Meetings from Zoho: {diary_error}")
 
+
+def consultant_of(appt):
+    return appt["consultant"] or "Unknown"
+
+
+consultant_options = sorted({consultant_of(a) for a in appointments})
+selected_consultants = st.multiselect(
+    "Filter by consultant",
+    options=consultant_options,
+    default=consultant_options,
+    key="diary_consultant_filter",
+)
+diary_appointments = [a for a in appointments if consultant_of(a) in selected_consultants]
+
 appointments_by_date = {}
-for appt in appointments:
+for appt in diary_appointments:
     appointments_by_date.setdefault(appt["date"], []).append(appt)
 for day_appts in appointments_by_date.values():
     day_appts.sort(key=lambda a: a["time"])
