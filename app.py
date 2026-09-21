@@ -162,6 +162,29 @@ def zoho_account_url(account_id):
 EVENTS_MODULE = "Events"
 EVENT_FIELDS = "Event_Title,Start_DateTime,End_DateTime,What_Id,Owner"
 
+# Consultant availability isn't tracked as its own thing in Zoho — instead,
+# the account manager marks a day directly in Zoho's calendar as an all-day
+# Meeting titled with one of these keywords anywhere in it (against no
+# account), and this app reads those back rather than needing anything new
+# kept in sync. Two conventions are supported side by side: blocking out the
+# (usually few) days a consultant is OUT — "Jamie - Unavailable" — or, often
+# less typing overall, opening up the days they ARE free to book into —
+# "Jamie - Available". "unavailable" is checked first since it contains
+# "available" as a substring, so one keyword can't be mistaken for the other.
+UNAVAILABLE_KEYWORD = "unavailable"
+AVAILABLE_KEYWORD = "available"
+
+
+def classify_availability_title(title):
+    """Returns 'unavailable', 'available', or None for a Meeting title,
+    per the keyword rules above."""
+    t = (title or "").lower()
+    if UNAVAILABLE_KEYWORD in t:
+        return "unavailable"
+    if AVAILABLE_KEYWORD in t:
+        return "available"
+    return None
+
 
 def format_duration(minutes):
     if minutes < 60:
@@ -273,6 +296,10 @@ def get_diary_appointments(accounts_df):
 
     appointments = []
     for e in events:
+        title = e.get("Event_Title") or ""
+        if classify_availability_title(title) is not None:
+            continue  # an availability marker, not a real booked visit
+
         what = e.get("What_Id") or {}
         related_id = what.get("id") if isinstance(what, dict) else None
         if not related_id:
@@ -307,6 +334,48 @@ def get_diary_appointments(accounts_df):
         )
 
     return appointments, None
+
+
+def get_availability_blocks():
+    """Reads consultant availability markers straight from Zoho's Meetings —
+    any Meeting titled 'Unavailable' or 'Available' (see classify_
+    availability_title above), regardless of what account (if any) it's
+    booked against. A block spanning several days only needs one Meeting in
+    Zoho: every calendar date from its start to its end (inclusive) counts,
+    for whoever owns it. Returns ({date_iso: {"available": {names},
+    "unavailable": {names}}}, error_message)."""
+    try:
+        events = load_meetings()
+    except Exception as err:
+        return {}, str(err)
+
+    blocks_by_date = {}
+    for e in events:
+        title = e.get("Event_Title") or ""
+        kind = classify_availability_title(title)
+        if kind is None:
+            continue
+
+        start_dt = pd.to_datetime(e.get("Start_DateTime"), errors="coerce")
+        if pd.isna(start_dt):
+            continue
+        end_dt = pd.to_datetime(e.get("End_DateTime"), errors="coerce")
+        if pd.isna(end_dt):
+            end_dt = start_dt
+
+        owner = e.get("Owner") or {}
+        consultant = (owner.get("name") if isinstance(owner, dict) else "") or "Unknown"
+
+        day = start_dt.date()
+        last_day = end_dt.date()
+        while day <= last_day:
+            day_entry = blocks_by_date.setdefault(
+                day.isoformat(), {"available": set(), "unavailable": set()}
+            )
+            day_entry[kind].add(consultant)
+            day += timedelta(days=1)
+
+    return blocks_by_date, None
 
 
 def add_months(d, delta):
@@ -727,12 +796,20 @@ st.caption(
 if diary_error:
     st.error(f"🚨 Could not load Meetings from Zoho: {diary_error}")
 
+availability_by_date, availability_error = get_availability_blocks()
+if availability_error:
+    st.error(f"🚨 Could not load consultant availability from Zoho: {availability_error}")
+
 
 def consultant_of(appt):
     return appt["consultant"] or "Unknown"
 
 
-consultant_options = sorted({consultant_of(a) for a in appointments})
+consultant_options = {consultant_of(a) for a in appointments}
+for entry in availability_by_date.values():
+    consultant_options |= entry["available"] | entry["unavailable"]
+consultant_options = sorted(consultant_options)
+
 selected_consultants = st.multiselect(
     "Filter by consultant",
     options=consultant_options,
@@ -740,6 +817,28 @@ selected_consultants = st.multiselect(
     key="diary_consultant_filter",
 )
 diary_appointments = [a for a in appointments if consultant_of(a) in selected_consultants]
+
+st.caption(
+    "✅ = marked available to book that day in Zoho (a Meeting titled with "
+    "'Available' in it) · 🚫 = marked unavailable ('Unavailable' in the "
+    "title). Either way, check the existing bookings shown for that day "
+    "before booking in — this doesn't check for clashes automatically."
+)
+
+
+def availability_markers(day_iso):
+    """Renders the ✅/🚫 lines for one diary day, filtered to the selected
+    consultants. A consultant with both an 'Available' and an 'Unavailable'
+    marker on the same day (unusual, but possible) shows under both — Zoho
+    is the source of truth, so this just reflects whatever's there rather
+    than trying to arbitrate between them."""
+    entry = availability_by_date.get(day_iso, {"available": set(), "unavailable": set()})
+    available_today = sorted(entry["available"] & set(selected_consultants))
+    unavailable_today = sorted(entry["unavailable"] & set(selected_consultants))
+    if available_today:
+        st.caption(f"✅ {', '.join(available_today)}")
+    if unavailable_today:
+        st.caption(f"🚫 {', '.join(unavailable_today)}")
 
 appointments_by_date = {}
 for appt in diary_appointments:
@@ -778,6 +877,7 @@ if view_mode == "Week":
         with col:
             is_today = day == date.today()
             st.markdown(f"{'🔵 ' if is_today else ''}**{day.strftime('%a %d %b')}**")
+            availability_markers(day.isoformat())
             day_appts = appointments_by_date.get(day.isoformat(), [])
             if not day_appts:
                 st.caption("—")
@@ -803,6 +903,7 @@ else:
                     day_date = date(ref_date.year, ref_date.month, day_num)
                     is_today = day_date == date.today()
                     st.markdown(f"{'🔵 ' if is_today else ''}**{day_num}**")
+                    availability_markers(day_date.isoformat())
                     day_appts = appointments_by_date.get(day_date.isoformat(), [])
                     if day_appts:
                         with st.popover(f"{len(day_appts)} 📅", use_container_width=True):
