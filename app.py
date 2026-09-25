@@ -315,9 +315,11 @@ LEGAL_CONTRACT_FIELDS = "Customer,End_Date"
 def load_legal_contract_end_dates():
     """Maps each Account id to the latest End_Date across its Legal
     Contracts records, as a fallback for accounts with no Contract End Date
-    set directly on the Account. Best-effort — if this module can't be
-    reached for any reason, accounts simply keep showing 'Unknown' as
-    before rather than the whole page breaking."""
+    set directly on the Account. Raises on any Zoho-side error (wrong
+    permissions/scope, module unreachable, etc.) rather than swallowing it —
+    the caller decides how visible to make that, but it must never be
+    invisible, or a real problem here (e.g. the connected app not being
+    granted access to this module) looks identical to "nothing to fill in"."""
     token = get_access_token()
     headers = {"Authorization": f"Zoho-oauthtoken {token}"}
 
@@ -331,10 +333,16 @@ def load_legal_contract_end_dates():
                 params={"fields": LEGAL_CONTRACT_FIELDS, "per_page": 200, "page": page},
                 timeout=20,
             )
-        except Exception:
-            break  # best-effort — accounts just keep their existing end date (or Unknown)
+        except Exception as err:
+            raise RuntimeError(f"Could not reach Zoho CRM API for Legal Contracts. Details: {err}")
+
+        if resp.status_code == 204:
+            break  # no Legal Contracts records at all
         if resp.status_code != 200:
-            break
+            raise RuntimeError(
+                f"Zoho CRM API returned an error fetching Legal Contracts "
+                f"(status {resp.status_code}): {resp.text}"
+            )
 
         payload = resp.json()
         for c in payload.get("data", []):
@@ -712,8 +720,17 @@ df["End Date Source"] = "Account record"
 # as-is.
 try:
     legal_contract_end_dates = load_legal_contract_end_dates()
-except Exception:
+    legal_contracts_error = None
+except Exception as err:
     legal_contract_end_dates = {}
+    legal_contracts_error = str(err)
+
+if legal_contracts_error:
+    st.warning(
+        f"⚠️ Couldn't pull Legal Contracts end dates from Zoho, so accounts "
+        f"relying on that fallback still show 'Unknown' for now. Details: "
+        f"{legal_contracts_error}"
+    )
 
 missing_end_date = df["Contract End Date"].isna()
 for account_id, end_date in legal_contract_end_dates.items():
