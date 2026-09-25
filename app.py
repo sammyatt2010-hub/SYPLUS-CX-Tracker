@@ -318,6 +318,7 @@ def get_diary_appointments(accounts_df):
 
     account_ids = set(accounts_df["Account ID"])
     account_names = dict(zip(accounts_df["Account ID"], accounts_df["Account Name"]))
+    account_postcodes = dict(zip(accounts_df["Account ID"], accounts_df["Postal Code"]))
 
     appointments = []
     for e in events:
@@ -349,6 +350,7 @@ def get_diary_appointments(accounts_df):
                 "id": e.get("id"),
                 "account_id": account_id,
                 "account_name": account_names.get(account_id, ""),
+                "postcode": account_postcodes.get(account_id, "") or "",
                 "title": e.get("Event_Title") or "Review Visit",
                 "consultant": consultant or "",
                 "date": start_dt.date().isoformat(),
@@ -413,16 +415,18 @@ def add_months(d, delta):
 
 
 def render_appointment(appt):
-    """Renders one diary entry: time, title, account, and the consultant
-    it's booked with. Read-only — these come straight from Zoho, so
-    cancelling or rescheduling happens there, not in this view."""
+    """Renders one diary entry: time, title, account, the site postcode
+    (so consultants' areas are easy to spot at a glance), and the
+    consultant it's booked with. Read-only — these come straight from
+    Zoho, so cancelling or rescheduling happens there, not in this view."""
     start_dt = appt["start_dt"]
     end_dt = appt["end_dt"]
     with st.container(border=True):
         account_link = zoho_account_url(appt["account_id"])
         duration_minutes = int((end_dt - start_dt).total_seconds() // 60)
+        postcode_suffix = f" · 📍 {appt['postcode']}" if appt.get("postcode") else ""
         st.markdown(
-            f"**{appt['time']}** — [{appt['account_name']}]({account_link})  \n"
+            f"**{appt['time']}** — [{appt['account_name']}]({account_link}){postcode_suffix}  \n"
             f"_{appt['title']}"
             + (f" ({format_duration(duration_minutes)})_" if duration_minutes > 0 else "_")
         )
