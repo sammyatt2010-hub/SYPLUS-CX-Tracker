@@ -300,6 +300,59 @@ def load_deal_account_map():
     return mapping
 
 
+# Some accounts have never had a Contract End Date filled in on the Account
+# record itself, but do have one on a "Legal Contracts" record underneath
+# them (a separate related module — its real API name is "Contracts", the
+# same UI-label-vs-api_name mismatch as Deals/Potentials). Verified live via
+# Zoho's own API: the module's account lookup field is "Customer", and its
+# end date field is "End_Date". An account can have more than one Legal
+# Contract on file, so the latest (longest) End_Date is used.
+LEGAL_CONTRACTS_MODULE = "Contracts"
+LEGAL_CONTRACT_FIELDS = "Customer,End_Date"
+
+
+@st.cache_data(ttl=60)
+def load_legal_contract_end_dates():
+    """Maps each Account id to the latest End_Date across its Legal
+    Contracts records, as a fallback for accounts with no Contract End Date
+    set directly on the Account. Best-effort — if this module can't be
+    reached for any reason, accounts simply keep showing 'Unknown' as
+    before rather than the whole page breaking."""
+    token = get_access_token()
+    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+    latest_end_date = {}
+    page = 1
+    while True:
+        try:
+            resp = requests.get(
+                f"{ZOHO_API_DOMAIN}/crm/v2/{LEGAL_CONTRACTS_MODULE}",
+                headers=headers,
+                params={"fields": LEGAL_CONTRACT_FIELDS, "per_page": 200, "page": page},
+                timeout=20,
+            )
+        except Exception:
+            break  # best-effort — accounts just keep their existing end date (or Unknown)
+        if resp.status_code != 200:
+            break
+
+        payload = resp.json()
+        for c in payload.get("data", []):
+            customer = c.get("Customer") or {}
+            account_id = customer.get("id") if isinstance(customer, dict) else None
+            end_date = pd.to_datetime(c.get("End_Date"), errors="coerce")
+            if not account_id or pd.isna(end_date):
+                continue
+            if account_id not in latest_end_date or end_date > latest_end_date[account_id]:
+                latest_end_date[account_id] = end_date
+
+        if not payload.get("info", {}).get("more_records"):
+            break
+        page += 1
+
+    return latest_end_date
+
+
 def get_diary_appointments(accounts_df):
     """Resolves booked Meetings from Zoho into diary entries for the given
     accounts — matching each Meeting's What_Id against the account directly,
@@ -650,6 +703,24 @@ def parse_zoho_date(value):
 
 
 df["Contract End Date"] = df["Contract End Date"].apply(parse_zoho_date)
+df["End Date Source"] = "Account record"
+
+# Fall back to the Legal Contracts related module for any account that has
+# no Contract End Date set directly on the Account itself — some colleagues
+# have been filling contract dates in there instead of on the main Account
+# page. Only fills gaps; an end date already on the Account record is left
+# as-is.
+try:
+    legal_contract_end_dates = load_legal_contract_end_dates()
+except Exception:
+    legal_contract_end_dates = {}
+
+missing_end_date = df["Contract End Date"].isna()
+for account_id, end_date in legal_contract_end_dates.items():
+    mask = missing_end_date & (df["Account ID"] == account_id)
+    df.loc[mask, "Contract End Date"] = end_date
+    df.loc[mask, "End Date Source"] = "Legal Contracts"
+
 today = pd.Timestamp(datetime.now(UK_TZ).date())
 df["Days Remaining"] = (df["Contract End Date"] - today).dt.days
 
@@ -955,6 +1026,7 @@ st.dataframe(
             "Feasibility",
             "Time Remaining",
             "Contract End Date",
+            "End Date Source",
             "Postal Code",
             "Area",
             "Primary Contact",
@@ -966,6 +1038,10 @@ st.dataframe(
     use_container_width=True,
     column_config={
         "Contract End Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+        "End Date Source": st.column_config.TextColumn(
+            "End Date Source",
+            help="Where this end date came from: the Account record itself, or (when that's blank) the latest Legal Contracts record underneath it.",
+        ),
         "Booked": st.column_config.CheckboxColumn(
             "Booked", help="Ticked once a review visit has been booked (CX - Review Booked tag)"
         ),
