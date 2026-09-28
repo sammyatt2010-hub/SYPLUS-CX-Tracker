@@ -1,4 +1,7 @@
 import calendar
+import hmac
+import html as html_lib
+import inspect
 import re
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -14,14 +17,122 @@ st.set_page_config(
 UK_TZ = ZoneInfo("Europe/London")
 
 
+# --- Prospect Engine styling (design system shared across Sam's apps) ---
+# Everything below to the "END styling" marker is presentation only — no
+# business logic lives here. The dataframe grid's own colours can't be
+# reached by CSS at all, which is why the matching dark theme also lives in
+# .streamlit/config.toml alongside this file.
+_PE_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+:root{--bg:#0A0E1A;--surface:#111827;--surface-2:#161F33;--surface-3:#1C2740;--border:rgba(148,163,184,.14);--border-strong:rgba(148,163,184,.26);--text:#E7EAF3;--muted:#8C98B0;--faint:#5E6A82;--accent:#7C83FF;--accent-2:#38D6F5;--accent-soft:rgba(124,131,255,.14);--good:#34D399;--warn:#FBBF24;--risk:#FB923C;--bad:#F87171;--radius:14px;--grad:linear-gradient(135deg,#7C83FF 0%,#38D6F5 100%);}
+html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif!important}
+.stApp{background:radial-gradient(1200px 500px at 85% -10%,rgba(56,214,245,.07),transparent 60%),radial-gradient(900px 500px at 10% -20%,rgba(124,131,255,.10),transparent 60%),var(--bg)}
+[data-testid="stHeader"]{background:transparent}[data-testid="stDecoration"]{display:none}footer{visibility:hidden}
+.block-container{padding-top:1.6rem!important;padding-bottom:3rem!important;max-width:1500px}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
+[data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
+[data-testid="stCaptionContainer"]{color:var(--muted)!important}
+.st-key-card-login,.st-key-card-kpi,.st-key-card-matrix,.st-key-card-diary,.st-key-card-list{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+[class*="st-key-appt-"],[class*="st-key-day-"]{background:linear-gradient(180deg,rgba(22,31,51,.7) 0%,rgba(17,24,39,.7) 100%);border:1px solid var(--border)!important;border-radius:12px;padding:14px 16px 10px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset;margin-bottom:10px}
+[data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
+[data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
+[data-baseweb="input"]>div,[data-baseweb="base-input"]{background:transparent!important}
+.stButton button,.stDownloadButton button,.stFormSubmitButton button{border-radius:10px!important;font-weight:600!important;border:1px solid var(--border-strong)!important;background:var(--surface-2)!important;color:var(--text)!important;transition:all .15s ease}
+.stButton button:hover,.stDownloadButton button:hover{border-color:var(--accent)!important;transform:translateY(-1px)}
+.stButton button[kind="primary"],.stDownloadButton button[kind="primary"],.stFormSubmitButton button,[data-testid="stBaseButton-primary"],[data-testid="stBaseLinkButton-primary"]{background:var(--grad)!important;border:none!important;color:#0A0E1A!important;box-shadow:0 8px 24px -10px rgba(124,131,255,.8)}
+.stButton button[kind="primary"] p,[data-testid="stBaseButton-primary"] p,.stFormSubmitButton button p,[data-testid="stBaseLinkButton-primary"] p{color:#0A0E1A!important;font-weight:700!important}
+[data-testid="stTabs"] [role="tablist"],[data-baseweb="tab-list"]{gap:4px;background:var(--surface);padding:4px;border-radius:12px;border:1px solid var(--border);width:fit-content}
+[data-testid="stTabs"] [role="tab"],[data-baseweb="tab"]{border-radius:9px!important;padding:8px 16px!important;color:var(--muted)!important;background:transparent!important}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"],[data-baseweb="tab"][aria-selected="true"]{background:var(--surface-3)!important;color:var(--text)!important}
+[data-baseweb="tab-highlight"],[data-baseweb="tab-border"],[data-testid="stTabs"] .react-aria-SelectionIndicator{display:none!important}
+[data-testid="stDataFrame"]{border:1px solid var(--border);border-radius:12px;overflow:hidden}
+[data-testid="stExpander"] details{background:var(--surface);border:1px solid var(--border)!important;border-radius:12px!important}
+[data-testid="stAlert"]{border-radius:12px!important}
+.pe-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;padding:6px 2px 22px;margin-bottom:18px;border-bottom:1px solid var(--border)}
+.pe-eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:.72rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent-2);margin-bottom:8px}
+.pe-eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 4px rgba(52,211,153,.15)}
+.pe-title{font-size:2.05rem;font-weight:800;letter-spacing:-.035em;line-height:1.1;color:var(--text)}
+.pe-title span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.pe-sub{color:var(--muted);font-size:.95rem;margin-top:8px;max-width:620px}
+.pe-section{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.pe-section .badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);font-weight:800;font-size:.85rem;border:1px solid rgba(124,131,255,.3)}
+.pe-section .t{font-size:1.08rem;font-weight:700;color:var(--text)}.pe-section .s{font-size:.82rem;color:var(--muted);margin-top:2px}
+.pe-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:.76rem;font-weight:600;background:var(--surface-3);color:var(--text);border:1px solid var(--border);white-space:nowrap}
+.pe-chip.accent{background:var(--accent-soft);color:#B9BDFF;border-color:rgba(124,131,255,.3)}
+.pe-chip.good{background:rgba(52,211,153,.12);color:var(--good);border-color:rgba(52,211,153,.3)}
+.pe-chip.warn{background:rgba(251,191,36,.12);color:var(--warn);border-color:rgba(251,191,36,.3)}
+.pe-chip.bad{background:rgba(248,113,113,.12);color:var(--bad);border-color:rgba(248,113,113,.3)}
+.pe-logo{width:40px;height:40px;border-radius:12px;background:var(--grad);display:grid;place-items:center;color:#0A0E1A;font-weight:800;box-shadow:0 10px 24px -10px rgba(124,131,255,.9)}
+.pe-brand{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+.pe-brand .name{font-weight:800;color:var(--text);font-size:1rem;letter-spacing:-.02em}
+.pe-brand .tag{color:var(--muted);font-size:.76rem}
+.pe-status-row{display:flex;align-items:center;gap:8px;font-size:.82rem;color:var(--muted);margin:14px 0 18px}
+.pe-status-row .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px rgba(52,211,153,.15)}
+.pe-mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px}
+.pe-mini{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.pe-mini .l{font-size:.66rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.pe-mini .v{font-size:1.25rem;font-weight:800;color:var(--text);margin-top:2px}
+.pe-login-head{text-align:center;margin:6vh 0 22px}.pe-login-head .pe-logo{width:54px;height:54px;margin:0 auto 16px;border-radius:16px;font-size:1.1rem}
+.pe-login-head .t{font-size:1.6rem;font-weight:800;letter-spacing:-.03em;color:var(--text)}.pe-login-head .s{color:var(--muted);font-size:.92rem;margin-top:6px}
+.pe-kpi{background:var(--surface);border:1px solid var(--border);border-top:2px solid var(--accent);border-radius:14px;padding:16px 18px;height:100%}
+.pe-kpi .l{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.pe-kpi .v{font-size:1.8rem;font-weight:800;letter-spacing:-.03em;color:var(--text);margin-top:6px}
+</style>
+"""
+st.markdown(_PE_CSS, unsafe_allow_html=True)
+
+
+def esc(v):
+    """Escapes any scraped or user-typed text before it goes into HTML —
+    skipping this is how an account called 'Smith & Co' breaks the page."""
+    return html_lib.escape(str(v if v is not None else ""), quote=True)
+
+
+def render_html(markup, target=None):
+    # Flatten lines: indented HTML inside st.markdown would otherwise render
+    # as a code block rather than as HTML.
+    (target or st).markdown("".join(line.strip() for line in markup.splitlines()), unsafe_allow_html=True)
+
+
+def chip(text, tone=""):
+    return f'<span class="pe-chip {tone}">{esc(text)}</span>'
+
+
+def section_header(num, title, subtitle=""):
+    render_html(
+        f'<div class="pe-section"><div class="badge">{num}</div><div><div class="t">{esc(title)}</div>'
+        + (f'<div class="s">{esc(subtitle)}</div>' if subtitle else "")
+        + "</div></div>"
+    )
+
+
+def _full_width():
+    try:
+        if "width" in inspect.signature(st.button).parameters:
+            return {"width": "stretch"}
+    except (TypeError, ValueError):
+        pass
+    return {"use_container_width": True}
+
+
+FULL_WIDTH = _full_width()
+# --- END styling helpers ---
+
+
 # --- Simple password gate ---
 def check_password():
     """Ask for a password before showing anything else on the page. The
     correct password lives in Streamlit secrets (app_password) rather than
-    in this file, so it can be changed later without touching the code."""
+    in this file, so it can be changed later without touching the code.
+    Fails closed if that secret is missing (no accounts get in for free),
+    and compares with hmac.compare_digest rather than == so the check can't
+    leak timing information about the real password."""
 
     def password_entered():
-        if st.session_state.get("password_input") == st.secrets.get("app_password", ""):
+        correct_password = st.secrets.get("app_password")
+        entered_password = st.session_state.get("password_input", "")
+        if correct_password and hmac.compare_digest(entered_password, correct_password):
             st.session_state["password_correct"] = True
             del st.session_state["password_input"]
         else:
@@ -30,11 +141,21 @@ def check_password():
     if st.session_state.get("password_correct"):
         return True
 
-    st.text_input(
-        "🔒 Password", type="password", on_change=password_entered, key="password_input"
+    render_html(
+        '<div class="pe-login-head">'
+        '<div class="pe-logo">SY</div>'
+        '<div class="t">SYPLUS CX Command Center</div>'
+        '<div class="s">Sign in to view live account &amp; diary data from Zoho CRM.</div>'
+        "</div>"
     )
-    if st.session_state.get("password_correct") is False:
-        st.error("Incorrect password")
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        with st.container(key="card-login"):
+            st.text_input(
+                "Password", type="password", on_change=password_entered, key="password_input"
+            )
+            if st.session_state.get("password_correct") is False:
+                st.error("Incorrect password")
     return False
 
 
@@ -42,11 +163,26 @@ if not check_password():
     st.stop()
 
 
-st.title("🧭 SYPLUS Customer Experience Command Center")
-st.caption(
-    "Live from Zoho CRM — SYPLUS accounts tagged for CX follow-up, "
-    "ranked by eagerness and contract feasibility."
-)
+# The hero banner up top needs numbers (account count, last refreshed time)
+# that aren't known until the Zoho data has loaded further down the script —
+# st.empty() reserves its slot here, at the top of the page, and it's filled
+# in later (see render_hero near the bottom) once those numbers exist.
+hero_placeholder = st.empty()
+
+
+def render_hero(target, account_count):
+    render_html(
+        '<div class="pe-hero"><div>'
+        '<div class="pe-eyebrow"><span class="dot"></span> LIVE · ZOHO CRM</div>'
+        '<div class="pe-title">SYPLUS Customer Experience <span>Command Center</span></div>'
+        '<div class="pe-sub">SYPLUS accounts tagged for CX follow-up, ranked by eagerness '
+        "and contract feasibility.</div></div>"
+        '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">'
+        + chip(f"{account_count} accounts tracked", "accent")
+        + chip(f"Last refreshed {datetime.now(UK_TZ).strftime('%H:%M:%S')}")
+        + "</div></div>",
+        target=target,
+    )
 
 # --- Zoho CRM Connection & Loading ---
 ZOHO_ACCOUNTS_URL = "https://accounts.zoho.eu/oauth/v2/token"
@@ -482,7 +618,7 @@ def render_appointment(appt):
     Zoho, so cancelling or rescheduling happens there, not in this view."""
     start_dt = appt["start_dt"]
     end_dt = appt["end_dt"]
-    with st.container(border=True):
+    with st.container(key=f"appt-{appt['id']}"):
         account_link = zoho_account_url(appt["account_id"])
         duration_minutes = int((end_dt - start_dt).total_seconds() // 60)
         postcode_suffix = f" · 📍 {appt['postcode']}" if appt.get("postcode") else ""
@@ -779,8 +915,28 @@ df["Area"] = df["Postal Code"].apply(postcode_area_name)
 df["Booked Status"] = df["Booked"].map({True: "Booked", False: "Not booked"})
 
 
-# --- Sidebar Filters ---
-st.sidebar.header("🔍 Filters")
+# --- Sidebar: brand, live snapshot, filters ---
+render_html(
+    '<div class="pe-brand"><div class="pe-logo">SY</div><div>'
+    '<div class="name">SYPLUS CX</div><div class="tag">Customer Experience Command Center</div>'
+    "</div></div>",
+    target=st.sidebar,
+)
+render_html(
+    '<div class="pe-status-row"><span class="dot"></span> Connected to Zoho CRM</div>',
+    target=st.sidebar,
+)
+render_html(
+    '<div class="pe-mini-grid">'
+    f'<div class="pe-mini"><div class="l">Tracked</div><div class="v">{len(df)}</div></div>'
+    f'<div class="pe-mini"><div class="l">Booked</div><div class="v">{int(df["Booked"].sum())}</div></div>'
+    f'<div class="pe-mini"><div class="l">No CX Tag</div><div class="v">{int((df["CX Tag"] == NO_CX_TAG).sum())}</div></div>'
+    f'<div class="pe-mini"><div class="l">Leaving</div><div class="v">{int((df["CX Tag"] == "CX - Leaving").sum())}</div></div>'
+    "</div>",
+    target=st.sidebar,
+)
+
+st.sidebar.header("Filters")
 
 selected_cx_tags = st.sidebar.multiselect(
     "CX Tag", options=EAGERNESS_ORDER, default=EAGERNESS_ORDER,
@@ -799,11 +955,16 @@ selected_booked_status = st.sidebar.multiselect(
 name_search = st.sidebar.text_input("Search account name")
 
 st.sidebar.divider()
-if st.sidebar.button("🔄 Refresh data now", use_container_width=True):
+if st.sidebar.button("Refresh data now", type="primary", **FULL_WIDTH):
     st.cache_data.clear()
     st.rerun()
 st.sidebar.caption(f"Last refreshed: {datetime.now(UK_TZ).strftime('%d/%m/%Y %H:%M:%S')}")
 st.sidebar.caption("Data refreshes from Zoho CRM automatically every 60 seconds, or click the button above for an instant refresh.")
+
+st.sidebar.divider()
+if st.sidebar.button("Log out", **FULL_WIDTH):
+    st.session_state["password_correct"] = False
+    st.rerun()
 
 filtered_df = df[
     df["CX Tag"].isin(selected_cx_tags)
@@ -815,253 +976,254 @@ if name_search:
         filtered_df["Account Name"].str.contains(name_search, case=False, na=False)
     ]
 
-st.divider()
-
 # --- Top-Line KPIs ---
+with st.container(key="card-kpi"):
+    section_header(1, "Overview", "Live counts across your filtered SYPLUS accounts")
 
-kpi_cols = st.columns(len(EAGERNESS_ORDER) + 2)
-kpi_cols[0].metric("SYPLUS Accounts Tracked", f"{len(filtered_df)}")
-for col, tag in zip(kpi_cols[1:-1], EAGERNESS_ORDER):
-    col.metric(EAGERNESS_LABEL[tag], f"{len(filtered_df[filtered_df['CX Tag'] == tag])}")
-filtered_account_ids = set(filtered_df["Account ID"])
-appointment_count = sum(1 for a in appointments if a["account_id"] in filtered_account_ids)
-kpi_cols[-1].metric("📅 Booked Appointments", f"{appointment_count}")
-
-st.divider()
+    kpi_cols = st.columns(len(EAGERNESS_ORDER) + 2)
+    with kpi_cols[0]:
+        render_html(f'<div class="pe-kpi"><div class="l">SYPLUS Accounts Tracked</div><div class="v">{len(filtered_df)}</div></div>')
+    for col, tag in zip(kpi_cols[1:-1], EAGERNESS_ORDER):
+        with col:
+            render_html(f'<div class="pe-kpi"><div class="l">{esc(EAGERNESS_LABEL[tag])}</div><div class="v">{len(filtered_df[filtered_df["CX Tag"] == tag])}</div></div>')
+    filtered_account_ids = set(filtered_df["Account ID"])
+    appointment_count = sum(1 for a in appointments if a["account_id"] in filtered_account_ids)
+    with kpi_cols[-1]:
+        render_html(f'<div class="pe-kpi"><div class="l">Booked Appointments</div><div class="v">{appointment_count}</div></div>')
 
 # --- Eagerness x Feasibility Matrix ---
-st.subheader("🎯 Priority Matrix")
-st.caption(
-    "Eagerness (from CX tag, or 'No CX Tag' where none is set yet) down the "
-    "side, feasibility (time left on contract) across the top. The top-left "
-    "corner is where to focus first."
-)
+with st.container(key="card-matrix"):
+    section_header(
+        2, "Priority Matrix",
+        "Eagerness (from CX tag, or 'No CX Tag' where none is set yet) down the side, "
+        "feasibility (time left on contract) across the top. The top-left corner is "
+        "where to focus first.",
+    )
 
-MATRIX_FEASIBILITY = ["0–2 years", "2–4 years", "4–7 years"]
-HOTTEST_CELL = ("CX - Eager", "0–2 years")  # eager + contract ending soon = act now
+    MATRIX_FEASIBILITY = ["0–2 years", "2–4 years", "4–7 years"]
+    HOTTEST_CELL = ("CX - Eager", "0–2 years")  # eager + contract ending soon = act now
 
-header_cols = st.columns([1.3] + [1] * len(MATRIX_FEASIBILITY))
-header_cols[0].markdown("**Eagerness \\ Feasibility**")
-for c, feas in zip(header_cols[1:], MATRIX_FEASIBILITY):
-    c.markdown(f"**{feas}**")
+    header_cols = st.columns([1.3] + [1] * len(MATRIX_FEASIBILITY))
+    header_cols[0].markdown("**Eagerness \\ Feasibility**")
+    for c, feas in zip(header_cols[1:], MATRIX_FEASIBILITY):
+        c.markdown(f"**{feas}**")
 
-for tag in EAGERNESS_ORDER:
-    row_cols = st.columns([1.3] + [1] * len(MATRIX_FEASIBILITY))
-    row_cols[0].markdown(f"**{EAGERNESS_LABEL[tag]}**")
-    for c, feas in zip(row_cols[1:], MATRIX_FEASIBILITY):
-        cell_df = filtered_df[
-            (filtered_df["CX Tag"] == tag) & (filtered_df["Feasibility"] == feas)
-        ].sort_values("Days Remaining")
-        with c:
-            with st.container(border=True):
-                badge = "🔥 " if (tag, feas) == HOTTEST_CELL else ""
-                st.markdown(f"{badge}**{len(cell_df)}**")
-                booked_count = int(cell_df["Booked"].sum())
-                if booked_count:
-                    st.caption(f"📅 {booked_count} booked")
-                if not cell_df.empty:
-                    with st.popover("View accounts", use_container_width=True):
-                        for _, acc in cell_df.iterrows():
-                            contact = acc["Primary Contact"] or "No primary contact on file"
-                            account_link = zoho_account_url(acc["Account ID"])
-                            booked_marker = " · 📅 Booked" if acc["Booked"] else ""
-                            st.markdown(
-                                f"**[{acc['Account Name']}]({account_link})** — "
-                                f"{acc['Time Remaining']}{booked_marker}  \n"
-                                f"_{contact}_"
-                            )
+    for tag in EAGERNESS_ORDER:
+        row_cols = st.columns([1.3] + [1] * len(MATRIX_FEASIBILITY))
+        row_cols[0].markdown(f"**{EAGERNESS_LABEL[tag]}**")
+        for c, feas in zip(row_cols[1:], MATRIX_FEASIBILITY):
+            cell_df = filtered_df[
+                (filtered_df["CX Tag"] == tag) & (filtered_df["Feasibility"] == feas)
+            ].sort_values("Days Remaining")
+            with c:
+                with st.container(border=True):
+                    badge = "🔥 " if (tag, feas) == HOTTEST_CELL else ""
+                    st.markdown(f"{badge}**{len(cell_df)}**")
+                    booked_count = int(cell_df["Booked"].sum())
+                    if booked_count:
+                        st.caption(f"📅 {booked_count} booked")
+                    if not cell_df.empty:
+                        with st.popover("View accounts", use_container_width=True):
+                            for _, acc in cell_df.iterrows():
+                                contact = acc["Primary Contact"] or "No primary contact on file"
+                                account_link = zoho_account_url(acc["Account ID"])
+                                booked_marker = " · 📅 Booked" if acc["Booked"] else ""
+                                st.markdown(
+                                    f"**[{acc['Account Name']}]({account_link})** — "
+                                    f"{acc['Time Remaining']}{booked_marker}  \n"
+                                    f"_{contact}_"
+                                )
 
-unknown_df = filtered_df[filtered_df["Feasibility"] == "Unknown"].copy()
-if not unknown_df.empty:
-    unknown_df["Open in Zoho"] = unknown_df["Account ID"].apply(zoho_account_url)
-    with st.expander(
-        f"⚠️ {len(unknown_df)} account(s) with no contract end date on file"
-    ):
-        st.dataframe(
-            unknown_df[
-                ["Account Name", "CX Tag", "Primary Contact", "Contract Term (months)", "Open in Zoho"]
-            ],
-            hide_index=True,
-            use_container_width=True,
-            column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
-        )
+    unknown_df = filtered_df[filtered_df["Feasibility"] == "Unknown"].copy()
+    if not unknown_df.empty:
+        unknown_df["Open in Zoho"] = unknown_df["Account ID"].apply(zoho_account_url)
+        with st.expander(
+            f"⚠️ {len(unknown_df)} account(s) with no contract end date on file"
+        ):
+            st.dataframe(
+                unknown_df[
+                    ["Account Name", "CX Tag", "Primary Contact", "Contract Term (months)", "Open in Zoho"]
+                ],
+                hide_index=True,
+                use_container_width=True,
+                column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
+            )
 
-# The matrix above only shows up to 4–7 years since no contract currently runs
-# longer — but if one ever does, it's flagged here rather than silently dropped.
-long_df = filtered_df[filtered_df["Feasibility"] == "7+ years"].copy()
-if not long_df.empty:
-    long_df["Open in Zoho"] = long_df["Account ID"].apply(zoho_account_url)
-    with st.expander(
-        f"ℹ️ {len(long_df)} account(s) with more than 7 years left on contract"
-    ):
-        st.dataframe(
-            long_df[["Account Name", "CX Tag", "Time Remaining", "Primary Contact", "Open in Zoho"]],
-            hide_index=True,
-            use_container_width=True,
-            column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
-        )
-
-st.divider()
+    # The matrix above only shows up to 4–7 years since no contract currently
+    # runs longer — but if one ever does, it's flagged here rather than
+    # silently dropped.
+    long_df = filtered_df[filtered_df["Feasibility"] == "7+ years"].copy()
+    if not long_df.empty:
+        long_df["Open in Zoho"] = long_df["Account ID"].apply(zoho_account_url)
+        with st.expander(
+            f"ℹ️ {len(long_df)} account(s) with more than 7 years left on contract"
+        ):
+            st.dataframe(
+                long_df[["Account Name", "CX Tag", "Time Remaining", "Primary Contact", "Open in Zoho"]],
+                hide_index=True,
+                use_container_width=True,
+                column_config={"Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗")},
+            )
 
 # --- Diary View ---
-st.subheader("🗓️ Diary — Booked Review Visits")
-st.caption(
-    "Live from Zoho's Meetings — booked against an account or one of its "
-    "deals. Cancelling or rescheduling happens in Zoho itself; this just "
-    "reflects it."
-)
+with st.container(key="card-diary"):
+    section_header(
+        3, "Diary — Booked Review Visits",
+        "Live from Zoho's Meetings — booked against an account or one of its deals. "
+        "Cancelling or rescheduling happens in Zoho itself; this just reflects it.",
+    )
 
-if diary_error:
-    st.error(f"🚨 Could not load Meetings from Zoho: {diary_error}")
+    if diary_error:
+        st.error(f"🚨 Could not load Meetings from Zoho: {diary_error}")
 
-availability_by_date, availability_error = get_availability_blocks()
-if availability_error:
-    st.error(f"🚨 Could not load consultant availability from Zoho: {availability_error}")
+    availability_by_date, availability_error = get_availability_blocks()
+    if availability_error:
+        st.error(f"🚨 Could not load consultant availability from Zoho: {availability_error}")
 
+    def consultant_of(appt):
+        return appt["consultant"] or "Unknown"
 
-def consultant_of(appt):
-    return appt["consultant"] or "Unknown"
+    consultant_options = {consultant_of(a) for a in appointments}
+    for entry in availability_by_date.values():
+        consultant_options |= entry["available"] | entry["unavailable"]
+    consultant_options = sorted(consultant_options)
 
+    selected_consultants = st.multiselect(
+        "Filter by consultant",
+        options=consultant_options,
+        default=consultant_options,
+        key="diary_consultant_filter",
+    )
+    diary_appointments = [a for a in appointments if consultant_of(a) in selected_consultants]
 
-consultant_options = {consultant_of(a) for a in appointments}
-for entry in availability_by_date.values():
-    consultant_options |= entry["available"] | entry["unavailable"]
-consultant_options = sorted(consultant_options)
+    st.caption(
+        "✅ = marked available to book that day in Zoho (a Meeting titled with "
+        "'Available' in it) · 🚫 = marked unavailable ('Unavailable' in the "
+        "title). Either way, check the existing bookings shown for that day "
+        "before booking in — this doesn't check for clashes automatically."
+    )
 
-selected_consultants = st.multiselect(
-    "Filter by consultant",
-    options=consultant_options,
-    default=consultant_options,
-    key="diary_consultant_filter",
-)
-diary_appointments = [a for a in appointments if consultant_of(a) in selected_consultants]
+    def availability_markers(day_iso):
+        """Renders the available/unavailable chips for one diary day, filtered
+        to the selected consultants. A consultant with both an 'Available' and
+        an 'Unavailable' marker on the same day (unusual, but possible) shows
+        under both — Zoho is the source of truth, so this just reflects
+        whatever's there rather than trying to arbitrate between them."""
+        entry = availability_by_date.get(day_iso, {"available": set(), "unavailable": set()})
+        available_today = sorted(entry["available"] & set(selected_consultants))
+        unavailable_today = sorted(entry["unavailable"] & set(selected_consultants))
+        if available_today:
+            render_html(chip("✅ " + ", ".join(available_today), "good"))
+        if unavailable_today:
+            render_html(chip("🚫 " + ", ".join(unavailable_today), "bad"))
 
-st.caption(
-    "✅ = marked available to book that day in Zoho (a Meeting titled with "
-    "'Available' in it) · 🚫 = marked unavailable ('Unavailable' in the "
-    "title). Either way, check the existing bookings shown for that day "
-    "before booking in — this doesn't check for clashes automatically."
-)
+    appointments_by_date = {}
+    for appt in diary_appointments:
+        appointments_by_date.setdefault(appt["date"], []).append(appt)
+    for day_appts in appointments_by_date.values():
+        day_appts.sort(key=lambda a: a["time"])
 
+    if "diary_ref_date" not in st.session_state:
+        st.session_state["diary_ref_date"] = date.today()
 
-def availability_markers(day_iso):
-    """Renders the ✅/🚫 lines for one diary day, filtered to the selected
-    consultants. A consultant with both an 'Available' and an 'Unavailable'
-    marker on the same day (unusual, but possible) shows under both — Zoho
-    is the source of truth, so this just reflects whatever's there rather
-    than trying to arbitrate between them."""
-    entry = availability_by_date.get(day_iso, {"available": set(), "unavailable": set()})
-    available_today = sorted(entry["available"] & set(selected_consultants))
-    unavailable_today = sorted(entry["unavailable"] & set(selected_consultants))
-    if available_today:
-        st.caption(f"✅ {', '.join(available_today)}")
-    if unavailable_today:
-        st.caption(f"🚫 {', '.join(unavailable_today)}")
+    view_mode = st.radio("View", options=["Week", "Month"], horizontal=True, key="diary_view_mode")
 
-appointments_by_date = {}
-for appt in diary_appointments:
-    appointments_by_date.setdefault(appt["date"], []).append(appt)
-for day_appts in appointments_by_date.values():
-    day_appts.sort(key=lambda a: a["time"])
+    nav_cols = st.columns([1, 1, 1, 4])
+    if nav_cols[0].button("Previous", **FULL_WIDTH):
+        if view_mode == "Week":
+            st.session_state["diary_ref_date"] -= timedelta(days=7)
+        else:
+            st.session_state["diary_ref_date"] = add_months(st.session_state["diary_ref_date"], -1)
+    if nav_cols[1].button("Today", **FULL_WIDTH):
+        st.session_state["diary_ref_date"] = date.today()
+    if nav_cols[2].button("Next", **FULL_WIDTH):
+        if view_mode == "Week":
+            st.session_state["diary_ref_date"] += timedelta(days=7)
+        else:
+            st.session_state["diary_ref_date"] = add_months(st.session_state["diary_ref_date"], 1)
 
-if "diary_ref_date" not in st.session_state:
-    st.session_state["diary_ref_date"] = date.today()
+    ref_date = st.session_state["diary_ref_date"]
 
-view_mode = st.radio("View", options=["Week", "Month"], horizontal=True, key="diary_view_mode")
-
-nav_cols = st.columns([1, 1, 1, 4])
-if nav_cols[0].button("◀ Previous", use_container_width=True):
     if view_mode == "Week":
-        st.session_state["diary_ref_date"] -= timedelta(days=7)
-    else:
-        st.session_state["diary_ref_date"] = add_months(st.session_state["diary_ref_date"], -1)
-if nav_cols[1].button("Today", use_container_width=True):
-    st.session_state["diary_ref_date"] = date.today()
-if nav_cols[2].button("Next ▶", use_container_width=True):
-    if view_mode == "Week":
-        st.session_state["diary_ref_date"] += timedelta(days=7)
-    else:
-        st.session_state["diary_ref_date"] = add_months(st.session_state["diary_ref_date"], 1)
+        week_start = ref_date - timedelta(days=ref_date.weekday())
+        week_days = [week_start + timedelta(days=i) for i in range(7)]
+        st.caption(f"Week of {week_start.strftime('%d %b %Y')}")
 
-ref_date = st.session_state["diary_ref_date"]
-
-if view_mode == "Week":
-    week_start = ref_date - timedelta(days=ref_date.weekday())
-    week_days = [week_start + timedelta(days=i) for i in range(7)]
-    st.caption(f"Week of {week_start.strftime('%d %b %Y')}")
-
-    day_cols = st.columns(7)
-    for col, day in zip(day_cols, week_days):
-        with col:
-            is_today = day == date.today()
-            st.markdown(f"{'🔵 ' if is_today else ''}**{day.strftime('%a %d %b')}**")
-            availability_markers(day.isoformat())
-            day_appts = appointments_by_date.get(day.isoformat(), [])
-            if not day_appts:
-                st.caption("—")
-            else:
-                for appt in day_appts:
-                    render_appointment(appt)
-else:
-    st.caption(ref_date.strftime("%B %Y"))
-    weeks = calendar.monthcalendar(ref_date.year, ref_date.month)
-
-    header_cols = st.columns(7)
-    for col, day_name in zip(header_cols, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
-        col.markdown(f"**{day_name}**")
-
-    for week in weeks:
-        week_cols = st.columns(7)
-        for col, day_num in zip(week_cols, week):
+        day_cols = st.columns(7)
+        for col, day in zip(day_cols, week_days):
             with col:
-                with st.container(border=True):
-                    if day_num == 0:
-                        st.markdown("&nbsp;")
-                        continue
-                    day_date = date(ref_date.year, ref_date.month, day_num)
-                    is_today = day_date == date.today()
-                    st.markdown(f"{'🔵 ' if is_today else ''}**{day_num}**")
-                    availability_markers(day_date.isoformat())
-                    day_appts = appointments_by_date.get(day_date.isoformat(), [])
-                    if day_appts:
-                        with st.popover(f"{len(day_appts)} 📅", use_container_width=True):
-                            for appt in day_appts:
-                                render_appointment(appt)
+                is_today = day == date.today()
+                st.markdown(f"{'🔵 ' if is_today else ''}**{day.strftime('%a %d %b')}**")
+                availability_markers(day.isoformat())
+                day_appts = appointments_by_date.get(day.isoformat(), [])
+                if not day_appts:
+                    st.caption("—")
+                else:
+                    for appt in day_appts:
+                        render_appointment(appt)
+    else:
+        st.caption(ref_date.strftime("%B %Y"))
+        weeks = calendar.monthcalendar(ref_date.year, ref_date.month)
 
-st.divider()
+        header_cols = st.columns(7)
+        for col, day_name in zip(header_cols, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+            col.markdown(f"**{day_name}**")
+
+        for week_idx, week in enumerate(weeks):
+            week_cols = st.columns(7)
+            for col_idx, (col, day_num) in enumerate(zip(week_cols, week)):
+                with col:
+                    with st.container(key=f"day-{ref_date.year}-{ref_date.month}-{week_idx}-{col_idx}"):
+                        if day_num == 0:
+                            st.markdown("&nbsp;")
+                            continue
+                        day_date = date(ref_date.year, ref_date.month, day_num)
+                        is_today = day_date == date.today()
+                        st.markdown(f"{'🔵 ' if is_today else ''}**{day_num}**")
+                        availability_markers(day_date.isoformat())
+                        day_appts = appointments_by_date.get(day_date.isoformat(), [])
+                        if day_appts:
+                            with st.popover(f"{len(day_appts)} 📅", use_container_width=True):
+                                for appt in day_appts:
+                                    render_appointment(appt)
 
 # --- Full Sortable List ---
-st.subheader("📋 Full Account List")
-full_list_df = filtered_df.sort_values("Days Remaining").copy()
-full_list_df["Open in Zoho"] = full_list_df["Account ID"].apply(zoho_account_url)
-st.dataframe(
-    full_list_df[
-        [
-            "Account Name",
-            "Eagerness",
-            "Booked",
-            "Feasibility",
-            "Time Remaining",
-            "Contract End Date",
-            "End Date Source",
-            "Postal Code",
-            "Area",
-            "Primary Contact",
-            "Primary Contact Number",
-            "Open in Zoho",
-        ]
-    ],
-    hide_index=True,
-    use_container_width=True,
-    column_config={
-        "Contract End Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
-        "End Date Source": st.column_config.TextColumn(
-            "End Date Source",
-            help="Where this end date came from: the Account record itself, or (when that's blank) the latest Legal Contracts record underneath it.",
-        ),
-        "Booked": st.column_config.CheckboxColumn(
-            "Booked", help="Ticked once a review visit has been booked (CX - Review Booked tag)"
-        ),
-        "Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗"),
-    },
-)
+with st.container(key="card-list"):
+    section_header(4, "Full Account List", "Sorted by days remaining on contract")
+    full_list_df = filtered_df.sort_values("Days Remaining").copy()
+    full_list_df["Open in Zoho"] = full_list_df["Account ID"].apply(zoho_account_url)
+    st.dataframe(
+        full_list_df[
+            [
+                "Account Name",
+                "Eagerness",
+                "Booked",
+                "Feasibility",
+                "Time Remaining",
+                "Contract End Date",
+                "End Date Source",
+                "Postal Code",
+                "Area",
+                "Primary Contact",
+                "Primary Contact Number",
+                "Open in Zoho",
+            ]
+        ],
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Contract End Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "End Date Source": st.column_config.TextColumn(
+                "End Date Source",
+                help="Where this end date came from: the Account record itself, or (when that's blank) the latest Legal Contracts record underneath it.",
+            ),
+            "Booked": st.column_config.CheckboxColumn(
+                "Booked", help="Ticked once a review visit has been booked (CX - Review Booked tag)"
+            ),
+            "Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗"),
+        },
+    )
+
+# Fill in the hero banner reserved at the top of the page now that the
+# account count for this run is known.
+render_hero(hero_placeholder, len(df))
