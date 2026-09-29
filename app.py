@@ -33,7 +33,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
 [data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
 [data-testid="stCaptionContainer"]{color:var(--muted)!important}
-.st-key-card-login,.st-key-card-kpi,.st-key-card-matrix,.st-key-card-diary,.st-key-card-list{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+.st-key-card-login,.st-key-card-kpi,.st-key-card-matrix,.st-key-card-diary,.st-key-card-appointments,.st-key-card-list{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
 [class*="st-key-appt-"],[class*="st-key-day-"]{background:linear-gradient(180deg,rgba(22,31,51,.7) 0%,rgba(17,24,39,.7) 100%);border:1px solid var(--border)!important;border-radius:12px;padding:14px 16px 10px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset;margin-bottom:10px}
 [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
 [data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
@@ -994,10 +994,13 @@ with st.container(key="card-kpi"):
     filtered_account_ids = set(filtered_df["Account ID"])
     appointment_count = sum(1 for a in appointments if a["account_id"] in filtered_account_ids)
     with kpi_cols[-1]:
-        # Clickable straight through to the Diary below — Sam's users would
-        # rather click than filter/sort the Full Account List table by hand.
+        # Clickable straight through to the full appointments list below —
+        # Sam's users would rather click than filter/sort a table by hand,
+        # and this jumps to the *complete* list (not just the current
+        # week/month in the calendar) so the whole company, including
+        # billing, can see everything booked at a glance.
         render_html(
-            '<a href="#diary-section" class="pe-kpi pe-kpi-link">'
+            '<a href="#all-appointments-section" class="pe-kpi pe-kpi-link">'
             '<span class="l">Booked Appointments ↓</span>'
             f'<span class="v">{appointment_count}</span></a>'
         )
@@ -1199,9 +1202,46 @@ with st.container(key="card-diary"):
                                 for appt in day_appts:
                                     render_appointment(appt)
 
+# --- All Booked Appointments (full list, not just the visible week/month) ---
+with st.container(key="card-appointments"):
+    section_header(
+        4,
+        "All Booked Appointments",
+        "Every review visit currently on the calendar — not limited to the week or month "
+        "in view above. Handy for a full at-a-glance list across the whole team.",
+        anchor_id="all-appointments-section",
+    )
+    if diary_appointments:
+        appts_df = pd.DataFrame(
+            [
+                {
+                    "Date": a["start_dt"].date(),
+                    "Time": a["start_dt"].strftime("%H:%M"),
+                    "Account Name": a["account_name"],
+                    "Postcode": a["postcode"],
+                    "Consultant": a["consultant"] or "Unknown",
+                    "Title": a["title"],
+                    "Open in Zoho": zoho_account_url(a["account_id"]),
+                    "_sort": a["start_dt"],
+                }
+                for a in diary_appointments
+            ]
+        ).sort_values("_sort").drop(columns="_sort")
+        st.dataframe(
+            appts_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗"),
+            },
+        )
+    else:
+        st.caption("No booked appointments match the current consultant filter.")
+
 # --- Full Sortable List ---
 with st.container(key="card-list"):
-    section_header(4, "Full Account List", "Sorted by days remaining on contract")
+    section_header(5, "Full Account List", "Sorted by days remaining on contract")
     full_list_df = filtered_df.sort_values("Days Remaining").copy()
     full_list_df["Open in Zoho"] = full_list_df["Account ID"].apply(zoho_account_url)
     st.dataframe(
