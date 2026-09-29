@@ -55,7 +55,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 .pe-title{font-size:2.05rem;font-weight:800;letter-spacing:-.035em;line-height:1.1;color:var(--text)}
 .pe-title span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
 .pe-sub{color:var(--muted);font-size:.95rem;margin-top:8px;max-width:620px}
-.pe-section{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.pe-section{display:flex;align-items:center;gap:12px;margin-bottom:16px;scroll-margin-top:20px}
 .pe-section .badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);font-weight:800;font-size:.85rem;border:1px solid rgba(124,131,255,.3)}
 .pe-section .t{font-size:1.08rem;font-weight:700;color:var(--text)}.pe-section .s{font-size:.82rem;color:var(--muted);margin-top:2px}
 .pe-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:.76rem;font-weight:600;background:var(--surface-3);color:var(--text);border:1px solid var(--border);white-space:nowrap}
@@ -78,6 +78,10 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 .pe-kpi{background:var(--surface);border:1px solid var(--border);border-top:2px solid var(--accent);border-radius:14px;padding:16px 18px;height:100%}
 .pe-kpi .l{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .pe-kpi .v{font-size:1.8rem;font-weight:800;letter-spacing:-.03em;color:var(--text);margin-top:6px}
+.pe-kpi-link{display:block;text-decoration:none!important;cursor:pointer;transition:all .15s ease}
+.pe-kpi-link:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 10px 24px -12px rgba(124,131,255,.6)}
+.pe-kpi-link .l,.pe-kpi-link .v{display:block}
+.pe-kpi-link .v{color:var(--accent-2)!important}
 </style>
 """
 st.markdown(_PE_CSS, unsafe_allow_html=True)
@@ -99,9 +103,10 @@ def chip(text, tone=""):
     return f'<span class="pe-chip {tone}">{esc(text)}</span>'
 
 
-def section_header(num, title, subtitle=""):
+def section_header(num, title, subtitle="", anchor_id=None):
+    id_attr = f' id="{esc(anchor_id)}"' if anchor_id else ""
     render_html(
-        f'<div class="pe-section"><div class="badge">{num}</div><div><div class="t">{esc(title)}</div>'
+        f'<div class="pe-section"{id_attr}><div class="badge">{num}</div><div><div class="t">{esc(title)}</div>'
         + (f'<div class="s">{esc(subtitle)}</div>' if subtitle else "")
         + "</div></div>"
     )
@@ -989,7 +994,13 @@ with st.container(key="card-kpi"):
     filtered_account_ids = set(filtered_df["Account ID"])
     appointment_count = sum(1 for a in appointments if a["account_id"] in filtered_account_ids)
     with kpi_cols[-1]:
-        render_html(f'<div class="pe-kpi"><div class="l">Booked Appointments</div><div class="v">{appointment_count}</div></div>')
+        # Clickable straight through to the Diary below — Sam's users would
+        # rather click than filter/sort the Full Account List table by hand.
+        render_html(
+            '<a href="#diary-section" class="pe-kpi pe-kpi-link">'
+            '<span class="l">Booked Appointments ↓</span>'
+            f'<span class="v">{appointment_count}</span></a>'
+        )
 
 # --- Eagerness x Feasibility Matrix ---
 with st.container(key="card-matrix"):
@@ -1071,6 +1082,7 @@ with st.container(key="card-diary"):
         3, "Diary — Booked Review Visits",
         "Live from Zoho's Meetings — booked against an account or one of its deals. "
         "Cancelling or rescheduling happens in Zoho itself; this just reflects it.",
+        anchor_id="diary-section",
     )
 
     if diary_error:
