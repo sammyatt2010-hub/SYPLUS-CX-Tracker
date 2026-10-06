@@ -33,7 +33,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
 [data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
 [data-testid="stCaptionContainer"]{color:var(--muted)!important}
-.st-key-card-login,.st-key-card-kpi,.st-key-card-matrix,.st-key-card-diary,.st-key-card-appointments,.st-key-card-list{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+.st-key-card-login,.st-key-card-kpi,.st-key-card-matrix,.st-key-card-diary,.st-key-card-appointments,.st-key-card-eagerness,.st-key-card-list{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
 [class*="st-key-appt-"],[class*="st-key-day-"]{background:linear-gradient(180deg,rgba(22,31,51,.7) 0%,rgba(17,24,39,.7) 100%);border:1px solid var(--border)!important;border-radius:12px;padding:14px 16px 10px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset;margin-bottom:10px}
 [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
 [data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
@@ -78,9 +78,9 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 .pe-kpi{background:var(--surface);border:1px solid var(--border);border-top:2px solid var(--accent);border-radius:14px;padding:16px 18px;height:100%}
 .pe-kpi .l{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .pe-kpi .v{font-size:1.8rem;font-weight:800;letter-spacing:-.03em;color:var(--text);margin-top:6px}
-.pe-kpi-link{display:block;text-decoration:none!important;cursor:pointer;transition:all .15s ease}
+.pe-subhead{display:flex;align-items:center;gap:10px;margin:18px 0 8px;scroll-margin-top:20px}.pe-subhead .n{font-weight:600;color:var(--text)}.pe-kpi-link{display:block;text-decoration:none!important;cursor:pointer;transition:all .15s ease}
 .pe-kpi-link:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 10px 24px -12px rgba(124,131,255,.6)}
-.pe-kpi-link .l,.pe-kpi-link .v{display:block}
+.pe-kpi-link .l,.pe-kpi-link .v{display:block}.pe-kpi-link{min-height:112px;box-sizing:border-box}.pe-kpi-link .l{font-size:.66rem;letter-spacing:.05em;overflow-wrap:normal;word-break:normal;hyphens:none;min-height:3.9em}
 .pe-kpi-link .v{color:var(--accent-2)!important}
 </style>
 """
@@ -224,6 +224,22 @@ EAGERNESS_LABEL = {
     "CX - Review - Neutral": "Review – Neutral",
     "CX - Leaving": "Leaving (at risk)",
     NO_CX_TAG: "No CX Tag",
+}
+
+# Anchor ids + chip tones for the clickable KPI tiles / per-eagerness tables.
+EAGERNESS_ANCHOR = {
+    "CX - Eager": "eagerness-eager",
+    "CX - Upgrade Potential": "eagerness-upgrade",
+    "CX - Review - Neutral": "eagerness-neutral",
+    "CX - Leaving": "eagerness-leaving",
+    NO_CX_TAG: "eagerness-no-tag",
+}
+EAGERNESS_TONE = {
+    "CX - Eager": "good",
+    "CX - Upgrade Potential": "accent",
+    "CX - Review - Neutral": "warn",
+    "CX - Leaving": "bad",
+    NO_CX_TAG: "",
 }
 
 FEASIBILITY_ORDER = ["0–2 years", "2–4 years", "4–7 years", "7+ years", "Unknown"]
@@ -987,10 +1003,18 @@ with st.container(key="card-kpi"):
 
     kpi_cols = st.columns(len(EAGERNESS_ORDER) + 2)
     with kpi_cols[0]:
-        render_html(f'<div class="pe-kpi"><div class="l">SYPLUS Accounts Tracked</div><div class="v">{len(filtered_df)}</div></div>')
+        render_html(
+            '<a href="#full-list-section" class="pe-kpi pe-kpi-link">'
+            '<span class="l">Accounts Tracked ↓</span>'
+            f'<span class="v">{len(filtered_df)}</span></a>'
+        )
     for col, tag in zip(kpi_cols[1:-1], EAGERNESS_ORDER):
         with col:
-            render_html(f'<div class="pe-kpi"><div class="l">{esc(EAGERNESS_LABEL[tag])}</div><div class="v">{len(filtered_df[filtered_df["CX Tag"] == tag])}</div></div>')
+            render_html(
+                f'<a href="#{EAGERNESS_ANCHOR[tag]}" class="pe-kpi pe-kpi-link">'
+                f'<span class="l">{esc(EAGERNESS_LABEL[tag])} ↓</span>'
+                f'<span class="v">{len(filtered_df[filtered_df["CX Tag"] == tag])}</span></a>'
+            )
     filtered_account_ids = set(filtered_df["Account ID"])
     appointment_count = sum(1 for a in appointments if a["account_id"] in filtered_account_ids)
     with kpi_cols[-1]:
@@ -1239,9 +1263,53 @@ with st.container(key="card-appointments"):
     else:
         st.caption("No booked appointments match the current consultant filter.")
 
+# --- Accounts by Eagerness (one table per KPI tile above) ---
+with st.container(key="card-eagerness"):
+    section_header(
+        5,
+        "Accounts by Eagerness",
+        "One table per CX tag — the tiles in the Overview jump straight to each. "
+        "Sorted by days remaining on contract, so the most urgent are at the top.",
+    )
+    for tag in EAGERNESS_ORDER:
+        tag_df = filtered_df[filtered_df["CX Tag"] == tag].sort_values("Days Remaining").copy()
+        render_html(
+            f'<div class="pe-subhead" id="{EAGERNESS_ANCHOR[tag]}">'
+            f'<span class="n">{esc(EAGERNESS_LABEL[tag])}</span>'
+            + chip(f"{len(tag_df)} account{'s' if len(tag_df) != 1 else ''}", EAGERNESS_TONE[tag])
+            + "</div>"
+        )
+        if tag_df.empty:
+            st.caption("No accounts in this category with the current filters.")
+            continue
+        tag_df["Open in Zoho"] = tag_df["Account ID"].apply(zoho_account_url)
+        st.dataframe(
+            tag_df[
+                [
+                    "Account Name",
+                    "Booked",
+                    "Feasibility",
+                    "Time Remaining",
+                    "Contract End Date",
+                    "Postal Code",
+                    "Area",
+                    "Primary Contact",
+                    "Primary Contact Number",
+                    "Open in Zoho",
+                ]
+            ],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Contract End Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Booked": st.column_config.CheckboxColumn("Booked"),
+                "Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗"),
+            },
+        )
+
 # --- Full Sortable List ---
 with st.container(key="card-list"):
-    section_header(5, "Full Account List", "Sorted by days remaining on contract")
+    section_header(6, "Full Account List", "Sorted by days remaining on contract", anchor_id="full-list-section")
     full_list_df = filtered_df.sort_values("Days Remaining").copy()
     full_list_df["Open in Zoho"] = full_list_df["Account ID"].apply(zoho_account_url)
     st.dataframe(
