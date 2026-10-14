@@ -33,7 +33,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
 [data-testid="stWidgetLabel"] p{font-size:.76rem!important;font-weight:600!important;color:var(--muted)!important;text-transform:uppercase;letter-spacing:.06em}
 [data-testid="stCaptionContainer"]{color:var(--muted)!important}
-.st-key-card-login,.st-key-card-kpi,.st-key-card-matrix,.st-key-card-diary,.st-key-card-appointments,.st-key-card-eagerness,.st-key-card-list{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
+.st-key-card-login,.st-key-card-kpi,.st-key-card-matrix,.st-key-card-diary,.st-key-card-appointments,.st-key-card-eagerness,.st-key-card-inhouse,.st-key-card-list{background:linear-gradient(180deg,rgba(22,31,51,.85) 0%,rgba(17,24,39,.85) 100%);border:1px solid var(--border)!important;border-radius:var(--radius);padding:22px 22px 18px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.6);margin-bottom:18px}
 [class*="st-key-appt-"],[class*="st-key-day-"]{background:linear-gradient(180deg,rgba(22,31,51,.7) 0%,rgba(17,24,39,.7) 100%);border:1px solid var(--border)!important;border-radius:12px;padding:14px 16px 10px;box-shadow:0 1px 0 rgba(255,255,255,.03) inset;margin-bottom:10px}
 [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"]{background:var(--surface)!important;border:1px solid var(--border-strong)!important;border-radius:10px!important}
 [data-baseweb="input"]:focus-within,[data-baseweb="select"]>div:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important}
@@ -80,7 +80,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 .pe-kpi .v{font-size:1.8rem;font-weight:800;letter-spacing:-.03em;color:var(--text);margin-top:6px}
 .pe-subhead{display:flex;align-items:center;gap:10px;margin:18px 0 8px;scroll-margin-top:20px}.pe-subhead .n{font-weight:600;color:var(--text)}.pe-kpi-link{display:block;text-decoration:none!important;cursor:pointer;transition:all .15s ease}
 .pe-kpi-link:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 10px 24px -12px rgba(124,131,255,.6)}
-.pe-kpi-link .l,.pe-kpi-link .v{display:block}.pe-kpi-link{min-height:112px;box-sizing:border-box}.pe-kpi-link .l{font-size:.66rem;letter-spacing:.05em;overflow-wrap:normal;word-break:normal;hyphens:none;min-height:3.9em}
+.pe-kpi-link .l,.pe-kpi-link .v{display:block}.pe-kpi-link{min-height:112px;box-sizing:border-box;padding:16px 12px 16px 14px}.pe-kpi-link .l{font-size:.63rem;letter-spacing:.03em;overflow-wrap:normal;word-break:normal;hyphens:none;min-height:3.9em}
 .pe-kpi-link .v{color:var(--accent-2)!important}
 </style>
 """
@@ -201,6 +201,17 @@ ACCOUNT_FIELDS = (
 # The SYPLUS "CX Filter" view in Zoho is built on these four tags. Any account
 # carrying one of these (plus the SYPLUS tag) is what this wallboard tracks.
 SYPLUS_TAG = "SYPLUS"
+
+# "In House" customers have a contract that is not provided by a third party,
+# so there's no big lease settlement to clear before upselling. They're tagged
+# in Zoho, separately from (and alongside) the CX eagerness tags — an account
+# can be Eager AND In House. "In House - Part Funded" is treated as In House too,
+# and just adds a "part funded" note so sales know a smaller settlement remains.
+IN_HOUSE_TAG = "In House"
+IN_HOUSE_PART_FUNDED_TAG = "In House - Part Funded"
+# True = an account must ALSO carry the SYPLUS tag to appear here. Left False so
+# every In House account shows up even if it was never SYPLUS-tagged.
+IN_HOUSE_REQUIRES_SYPLUS_TAG = False
 
 # A separate, independent tag consultants/account managers apply once they've
 # booked a review visit — it sits alongside one of the four CX tags above
@@ -724,8 +735,13 @@ def load_accounts():
     for r in records:
         tag_names = [t.get("name", "") for t in (r.get("Tag") or [])]
 
-        # Only accounts explicitly tagged SYPLUS belong on this wallboard.
-        if SYPLUS_TAG not in tag_names:
+        in_house_part_funded = IN_HOUSE_PART_FUNDED_TAG in tag_names
+        in_house = in_house_part_funded or IN_HOUSE_TAG in tag_names
+
+        # Accounts tagged SYPLUS belong on this wallboard; so do In House
+        # accounts (unless IN_HOUSE_REQUIRES_SYPLUS_TAG says otherwise).
+        has_syplus = SYPLUS_TAG in tag_names
+        if not (has_syplus or (in_house and not IN_HOUSE_REQUIRES_SYPLUS_TAG)):
             continue
 
         # Pick the highest-priority CX tag present on this account. A SYPLUS
@@ -743,6 +759,10 @@ def load_accounts():
                 # they're loaded, which is the actual source of truth.
                 "Booked": BOOKED_TAG in tag_names,
                 "All Tags": ", ".join(sorted(tag_names)),
+                "In House": in_house,
+                "In House Type": (
+                    "In House (part funded)" if in_house_part_funded else ("In House" if in_house else "")
+                ),
                 "Primary Contact": r.get("Primary_Contact_Name") or "",
                 "Primary Contact Number": r.get("Primary_Contact_Number") or "",
                 "Phone": r.get("Phone") or "",
@@ -934,6 +954,7 @@ df["Time Remaining"] = df["Days Remaining"].apply(time_remaining_label)
 df["Eagerness"] = df["CX Tag"].map(EAGERNESS_LABEL)
 df["Area"] = df["Postal Code"].apply(postcode_area_name)
 df["Booked Status"] = df["Booked"].map({True: "Booked", False: "Not booked"})
+df["Account Type"] = df["In House"].map({True: "In House", False: "Not in house"})
 
 
 # --- Sidebar: brand, live snapshot, filters ---
@@ -973,6 +994,12 @@ selected_booked_status = st.sidebar.multiselect(
     options=["Booked", "Not booked"],
     default=["Booked", "Not booked"],
 )
+selected_account_types = st.sidebar.multiselect(
+    "Account type",
+    options=["In House", "Not in house"],
+    default=["In House", "Not in house"],
+    help="In House = contract not provided by a 3rd party (no lease settlement to clear).",
+)
 name_search = st.sidebar.text_input("Search account name")
 
 st.sidebar.divider()
@@ -991,6 +1018,7 @@ filtered_df = df[
     df["CX Tag"].isin(selected_cx_tags)
     & df["Feasibility"].isin(selected_feasibility)
     & df["Booked Status"].isin(selected_booked_status)
+    & df["Account Type"].isin(selected_account_types)
 ]
 if name_search:
     filtered_df = filtered_df[
@@ -1001,20 +1029,26 @@ if name_search:
 with st.container(key="card-kpi"):
     section_header(1, "Overview", "Live counts across your filtered SYPLUS accounts")
 
-    kpi_cols = st.columns(len(EAGERNESS_ORDER) + 2)
+    kpi_cols = st.columns([1] * (len(EAGERNESS_ORDER) + 2) + [1.35])  # last (Booked Appointments) label is the longest
     with kpi_cols[0]:
         render_html(
             '<a href="#full-list-section" class="pe-kpi pe-kpi-link">'
             '<span class="l">Accounts Tracked ↓</span>'
             f'<span class="v">{len(filtered_df)}</span></a>'
         )
-    for col, tag in zip(kpi_cols[1:-1], EAGERNESS_ORDER):
+    for col, tag in zip(kpi_cols[1 : 1 + len(EAGERNESS_ORDER)], EAGERNESS_ORDER):
         with col:
             render_html(
                 f'<a href="#{EAGERNESS_ANCHOR[tag]}" class="pe-kpi pe-kpi-link">'
                 f'<span class="l">{esc(EAGERNESS_LABEL[tag])} ↓</span>'
                 f'<span class="v">{len(filtered_df[filtered_df["CX Tag"] == tag])}</span></a>'
             )
+    with kpi_cols[1 + len(EAGERNESS_ORDER)]:
+        render_html(
+            '<a href="#in-house-section" class="pe-kpi pe-kpi-link">'
+            '<span class="l">In House ↓</span>'
+            f'<span class="v">{int(filtered_df["In House"].sum())}</span></a>'
+        )
     filtered_account_ids = set(filtered_df["Account ID"])
     appointment_count = sum(1 for a in appointments if a["account_id"] in filtered_account_ids)
     with kpi_cols[-1]:
@@ -1263,10 +1297,51 @@ with st.container(key="card-appointments"):
     else:
         st.caption("No booked appointments match the current consultant filter.")
 
+# --- In House customers (contract not via a 3rd party => easier upsell) ---
+with st.container(key="card-inhouse"):
+    section_header(
+        5,
+        "In House Customers",
+        "Contract not provided by a 3rd party, so there's no lease settlement to clear — "
+        "the easiest accounts to upsell. Tagged \"In House\" in Zoho.",
+        anchor_id="in-house-section",
+    )
+    in_house_df = filtered_df[filtered_df["In House"]].sort_values("Days Remaining").copy()
+    if in_house_df.empty:
+        st.caption("No In House accounts match the current filters.")
+    else:
+        in_house_df["Open in Zoho"] = in_house_df["Account ID"].apply(zoho_account_url)
+        st.dataframe(
+            in_house_df[
+                [
+                    "Account Name",
+                    "In House Type",
+                    "Eagerness",
+                    "Booked",
+                    "Feasibility",
+                    "Time Remaining",
+                    "Contract End Date",
+                    "Postal Code",
+                    "Area",
+                    "Primary Contact",
+                    "Primary Contact Number",
+                    "Open in Zoho",
+                ]
+            ],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "In House Type": st.column_config.TextColumn("Type"),
+                "Contract End Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Booked": st.column_config.CheckboxColumn("Booked"),
+                "Open in Zoho": st.column_config.LinkColumn(display_text="Open ↗"),
+            },
+        )
+
 # --- Accounts by Eagerness (one table per KPI tile above) ---
 with st.container(key="card-eagerness"):
     section_header(
-        5,
+        6,
         "Accounts by Eagerness",
         "One table per CX tag — the tiles in the Overview jump straight to each. "
         "Sorted by days remaining on contract, so the most urgent are at the top.",
@@ -1309,7 +1384,7 @@ with st.container(key="card-eagerness"):
 
 # --- Full Sortable List ---
 with st.container(key="card-list"):
-    section_header(6, "Full Account List", "Sorted by days remaining on contract", anchor_id="full-list-section")
+    section_header(7, "Full Account List", "Sorted by days remaining on contract", anchor_id="full-list-section")
     full_list_df = filtered_df.sort_values("Days Remaining").copy()
     full_list_df["Open in Zoho"] = full_list_df["Account ID"].apply(zoho_account_url)
     st.dataframe(
@@ -1318,6 +1393,7 @@ with st.container(key="card-list"):
                 "Account Name",
                 "Eagerness",
                 "Booked",
+                "In House Type",
                 "Feasibility",
                 "Time Remaining",
                 "Contract End Date",
@@ -1337,6 +1413,7 @@ with st.container(key="card-list"):
                 "End Date Source",
                 help="Where this end date came from: the Account record itself, or (when that's blank) the latest Legal Contracts record underneath it.",
             ),
+            "In House Type": st.column_config.TextColumn("Type"),
             "Booked": st.column_config.CheckboxColumn(
                 "Booked", help="Ticked once a review visit has been booked (CX - Review Booked tag)"
             ),
