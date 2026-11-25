@@ -833,11 +833,101 @@ def get_contacts_lookup():
     return contacts_by_account
 
 
+# --- Zoho token helper ---
+# Shown whenever the Zoho login fails, so a dead refresh token can be
+# replaced without leaving the app: generate a grant code in Zoho's API
+# console (Self Client), paste it here, and the app swaps it for a new
+# refresh token to copy into Streamlit Secrets. Only reachable after the
+# app password, and it never saves anything itself.
+ZOHO_TOKEN_SCOPE = (
+    "ZohoCRM.modules.ALL,ZohoCRM.settings.ALL,ZohoCRM.users.READ,ZohoCRM.org.READ"
+)
+
+
+def render_token_helper():
+    st.markdown("### 🔑 Zoho token helper")
+    st.markdown(
+        "1. Open **[api-console.zoho.eu](https://api-console.zoho.eu)** → your "
+        "**Self Client** (the same one whose Client ID is in Streamlit Secrets) "
+        "→ **Generate Code** tab.\n"
+        "2. Paste this into **Scope**:"
+    )
+    st.code(ZOHO_TOKEN_SCOPE, language=None)
+    st.markdown(
+        "3. Set **Time Duration** to 10 minutes, add any description, click "
+        "**Create**, choose the SY Comms CRM org, and copy the code it shows.\n"
+        "4. Paste the code below straight away (it expires quickly and only "
+        "works once)."
+    )
+
+    try:
+        creds = st.secrets["zoho"]
+        client_id, client_secret = creds["client_id"], creds["client_secret"]
+    except Exception:
+        st.error(
+            "Streamlit Secrets has no [zoho] section with client_id and "
+            "client_secret, so the code can't be exchanged here."
+        )
+        return
+
+    with st.form("zoho_token_form"):
+        grant_code = st.text_input("Grant code", type="password")
+        submitted = st.form_submit_button("Get refresh token", type="primary")
+
+    if not submitted:
+        return
+    if not grant_code.strip():
+        st.warning("Paste the grant code first.")
+        return
+
+    try:
+        resp = requests.post(
+            ZOHO_ACCOUNTS_URL,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": grant_code.strip(),
+            },
+            timeout=15,
+        )
+        payload = resp.json()
+    except Exception as err:
+        st.error(f"Could not reach Zoho accounts server. Details: {err}")
+        return
+
+    refresh_token = payload.get("refresh_token")
+    if not refresh_token:
+        if payload.get("error") == "invalid_code":
+            st.error(
+                "Zoho rejected that code (invalid_code). It has either expired, "
+                "already been used, or was made under a different client than "
+                "the one in Secrets. Generate a fresh one and paste it straight in."
+            )
+        else:
+            st.error(f"Zoho didn't return a refresh token: {payload}")
+        return
+
+    st.success("Got a new refresh token. Put it in Streamlit Secrets:")
+    st.markdown(
+        "Streamlit Cloud → this app → **⋮ → Settings → Secrets**, replace the "
+        "`refresh_token` line under `[zoho]` with this one, then **Save**. "
+        "The app restarts on its own."
+    )
+    st.code(f'refresh_token = "{refresh_token}"', language="toml")
+
+
 # --- Load & Error Handling ---
 try:
     df = load_accounts()
 except Exception as e:
     st.error(f"🚨 Zoho CRM Connection Error: {e}")
+    if "authentication failed" in str(e) or "Missing Zoho credentials" in str(e):
+        st.info(
+            "The saved Zoho refresh token no longer works (Zoho revokes them now "
+            "and then). Use the helper below to make a new one."
+        )
+        render_token_helper()
     st.stop()
 
 if df.empty:
